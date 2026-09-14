@@ -1,0 +1,46 @@
+name: amf-pg-prod3
+# Real prod3 (10.10.10.13). Deploy dir on the server: /srv/docker/pg-cluster-instance-3/
+# etcd3 ONLY — this host is a pure DCS voter, no Postgres, no vip-manager (it never
+# holds the VIP; it's the tiebreaker that lets db1/db2's quorum survive either one dying).
+#
+# CA: the dedicated pgcluster CA (2026-07-21) — see postgres_cluster/certs-request/
+# gen-pgcluster-ca.sh. Certs staged at /srv/docker/pg-cluster-instance-3/certs/.
+#
+# Ports (already open in ufw, matching db1/db2's "prepend-1" scheme):
+#   12379 = etcd client | 12380 = etcd peer
+
+services:
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.21
+    network_mode: host
+    restart: always
+    command: >
+      etcd --name etcd3 --data-dir /etcd-data
+      --listen-client-urls https://0.0.0.0:12379
+      --advertise-client-urls https://10.10.10.13:12379
+      --client-cert-auth --trusted-ca-file /certs/ca.crt
+      --cert-file /certs/etcd3.server.crt --key-file /certs/etcd3.server.key
+      --listen-peer-urls https://0.0.0.0:12380
+      --initial-advertise-peer-urls https://10.10.10.13:12380
+      --peer-client-cert-auth --peer-trusted-ca-file /certs/ca.crt
+      --peer-cert-file /certs/etcd3.peer.crt --peer-key-file /certs/etcd3.peer.key
+      --initial-cluster etcd1=https://10.10.10.20:12380,etcd2=https://10.10.10.21:12380,etcd3=https://10.10.10.13:12380
+      --initial-cluster-state existing --initial-cluster-token pg-ha-cluster
+    volumes:
+      - etcd_data:/etcd-data
+      - ./certs:/certs:ro
+
+volumes:
+  etcd_data:
+
+# Bring-up (historical): this was originally a genuine fresh 3-way bootstrap — the compose
+# files across all three hosts had --initial-cluster-state=new, same initial-cluster list +
+# token, and none of the three could reach quorum until all three were up together.
+#
+# --initial-cluster-state is now `existing` (2026-07-30) on all three hosts, now that the
+# cluster has successfully formed. This is deliberate, not a typo: a data directory that
+# already has a valid store ignores this flag on normal restarts either way, but leaving it
+# on `new` was a latent risk — if this member's data volume were ever lost or wiped by
+# mistake, `new` would let it silently attempt a fresh bootstrap against a cluster the other
+# two members already consider established, instead of failing loudly. `existing` fails
+# loudly instead, which is the outcome you want here.

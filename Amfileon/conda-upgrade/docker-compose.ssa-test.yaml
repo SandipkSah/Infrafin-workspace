@@ -1,0 +1,23 @@
+# Isolation override for testing an upgraded conda image on ONE container (ssa)
+# without touching any other conda-* service or the shared `amfileon/conda` tag
+# they all run on.
+#
+# Usage on gpu1, from /srv/docker/conda:
+#
+#   docker compose \
+#     -f docker-compose.yaml \
+#     -f docker-compose.override.yaml \
+#     -f docker-compose.ssa-test.yaml \
+#     up -d --no-deps --force-recreate ssa
+#
+# --no-deps        leaves redis and every other conda-* container alone
+# --force-recreate recreates only conda-ssa, onto the `image:` below
+#
+# For the ssa-test-max variant, change the tag to amfileon/conda:ssa-test-max.
+#
+# Rollback (any time): delete this file and re-run the same command minus
+# `-f docker-compose.ssa-test.yaml` -- conda-ssa goes back to `amfileon/conda`.
+
+services:
+  ssa:
+    image: amfileon/conda:ssa-test

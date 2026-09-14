@@ -1,0 +1,100 @@
+name: amf-pg-db1
+# Real db1 (10.10.10.20). Deploy dir on the server: /srv/docker/pg-cluster-instance-1/
+# Spilo (Postgres+Patroni) + vip-manager. Joins SCOPE=amfcluster -> Replica (db2 holds
+# the leader lock; Patroni will pg_basebackup from 10.10.10.21:15432).
+#
+# DCS: db2's dedicated etcd (10.10.10.21:12379), now mTLS — a brand-new CA generated
+# specifically for this cluster (2026-07-21), NOT the org-wide amf CA, NOT /srv/docker/patroni/.
+# Script: postgres_cluster/certs-request/gen-pgcluster-ca.sh.
+#
+# ⚠️ Coordinated cutover: this host's certs (ca.crt + etcd1.client.crt/key) must be in
+# place BEFORE bringing pg1 up, and db2's etcd must already be serving TLS — see db2's
+# compose header for the full bring-up order across both hosts.
+#
+# Ports ("prepend-1" scheme): 15432 = Postgres | 18008 = Patroni REST
+
+services:
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.21
+    network_mode: host
+    restart: always
+    command: >
+      etcd --name etcd1 --data-dir /etcd-data
+      --listen-client-urls https://0.0.0.0:12379
+      --advertise-client-urls https://10.10.10.20:12379
+      --client-cert-auth --trusted-ca-file /certs/ca.crt
+      --cert-file /certs/etcd1.server.crt --key-file /certs/etcd1.server.key
+      --listen-peer-urls https://0.0.0.0:12380
+      --initial-advertise-peer-urls https://10.10.10.20:12380
+      --peer-client-cert-auth --peer-trusted-ca-file /certs/ca.crt
+      --peer-cert-file /certs/etcd1.peer.crt --peer-key-file /certs/etcd1.peer.key
+      --initial-cluster etcd1=https://10.10.10.20:12380,etcd2=https://10.10.10.21:12380,etcd3=https://10.10.10.13:12380
+      --initial-cluster-state existing --initial-cluster-token pg-ha-cluster
+    volumes:
+      - etcd1_data:/etcd-data
+      - ./certs:/certs:ro
+
+  pg1:
+    image: ghcr.io/zalando/spilo-17:4.0-p2      # same image as db2; TODO(later): registry.amf + digest
+    network_mode: host
+    restart: always
+    env_file: [.env]                            # COPY FROM DB2 — must match exactly
+    environment:
+      SCOPE: "${SCOPE}"
+      PGPORT: "${PGPORT}"
+      PGVERSION: "${PGVERSION}"
+
+      PGPASSWORD_SUPERUSER: postgres
+      PGPASSWORD_ADMIN: admin
+      PGPASSWORD_STANDBY: standby
+
+      ETCD3_HOSTS: "${ETCD3_HOSTS}"
+      ETCD3_PROTOCOL: "${ETCD3_PROTOCOL}"
+      ETCD3_CACERT: "${ETCD3_CACERT}"
+      ETCD3_CERT: "${ETCD3_CERT}"
+      ETCD3_KEY: "${ETCD3_KEY}"
+
+      SPILO_CONFIGURATION: |
+        postgresql:
+          listen: "0.0.0.0:15432"
+          connect_address: "10.10.10.20:15432"
+        restapi:
+          listen: "0.0.0.0:18008"
+          connect_address: "10.10.10.20:18008"
+    volumes:
+      - ./certs:/certs:ro                        # ca.crt + etcd1.client.{crt,key}
+      - pg1_data:/home/postgres/pgdata
+    # Member name = host hostname ("db1") via host networking. Verify with patronictl list.
+
+  vip-manager:
+    build: ./vip-manager
+    image: vip-manager:4.2.0
+    network_mode: host
+    cap_add: [NET_ADMIN]
+    restart: always
+    environment:
+      VIP_IP: "${VIP_IP}"
+      VIP_NETMASK: "${VIP_NETMASK}"
+      VIP_INTERFACE: "${VIP_INTERFACE}"  # CONFIRMED on db1 (2026-07-17) — differs from db2's ens259f0np0
+      VIP_TRIGGER_KEY: "${VIP_TRIGGER_KEY}"
+      VIP_TRIGGER_VALUE: "${VIP_TRIGGER_VALUE}"
+      VIP_DCS_TYPE: "${VIP_DCS_TYPE}"
+      VIP_DCS_ENDPOINTS: "${VIP_DCS_ENDPOINTS}"
+      VIP_ETCD_CA_FILE: "${VIP_ETCD_CA_FILE}"
+      VIP_ETCD_CERT_FILE: "${VIP_ETCD_CERT_FILE}"
+      VIP_ETCD_KEY_FILE: "${VIP_ETCD_KEY_FILE}"
+    volumes:
+      - ./certs:/certs:ro
+
+volumes:
+  etcd1_data:
+  pg1_data:
+
+# Bring-up (coordinated with db2 — see that file's header for the full sequence):
+#   0. Place certs in ./certs/ on this host: ca.crt, etcd1.client.crt, etcd1.client.key
+#      (chown 101:103 the .key — Patroni runs as uid 101, can't read a root-owned 0600 key)
+#   1. Wait for db2's etcd to be up and serving TLS first.
+#   2. docker compose up -d pg1     — expect "bootstrapping from leader" or reconnect if
+#      pg1 already had data from before (existing data dir just needs to re-establish
+#      its Patroni/etcd connection over TLS).
+#   3. docker compose build vip-manager && docker compose up -d vip-manager

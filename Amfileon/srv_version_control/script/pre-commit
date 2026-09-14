@@ -1,0 +1,212 @@
+#!/usr/bin/env bash
+# Pre-commit hook: blocks a commit if gitleaks, trufflehog, detect-secrets, or
+# a key-name pattern check find a secret in the STAGED changes (not the whole
+# working tree -- just what's about to be committed). This is a last-resort
+# safety net; the primary defense is the .gitignore + sanitize_service_files.py
+# workflow keeping real secret-bearing files out of git in the first place.
+#
+# Four independent signals, deliberately overlapping rather than layered as a
+# fallback chain -- each has a different blind spot the others don't:
+#   - gitleaks / trufflehog: value-based (entropy + rules). Can both miss a
+#     low-entropy/dictionary-word secret (a weak password like "postgres" or
+#     "hunter2"), and can miss a secret embedded in an unexpected shape.
+#   - detect-secrets: a differently-maintained rule set from gitleaks/
+#     trufflehog, plus a BasicAuthDetector specifically for credentials
+#     embedded in a URL (scheme://user:token@host/...) that the others can
+#     miss entirely since it's not a "KEY: value" line at all.
+#   - key-name pattern check (ours): catches a weak/low-entropy secret by
+#     what the variable/directive is CALLED, regardless of how weak or
+#     unusual its value is -- but only when it IS a "KEY: value"/"KEY=value"
+#     shape with a recognized keyword.
+# None of the three tools alone would have caught every real secret found
+# during review of this repo; this is why all four run on every commit.
+#
+# Never prints secret values -- only file paths, line numbers, and
+# detector/rule names.
+set -uo pipefail
+
+FAIL=0
+STAGED_FILES="$(git diff --cached --name-only --diff-filter=ACM)"
+
+if command -v gitleaks >/dev/null 2>&1; then
+  echo "pre-commit: running gitleaks on staged changes..."
+  if ! gitleaks protect --staged --redact --no-banner -v; then
+    echo "pre-commit: gitleaks found a potential secret in the staged changes -- commit blocked."
+    FAIL=1
+  fi
+else
+  echo "pre-commit: WARNING gitleaks not installed -- skipping that check" >&2
+fi
+
+if [ -n "$STAGED_FILES" ]; then
+  TMPDIR_STAGED="$(mktemp -d)"
+  trap 'rm -rf "$TMPDIR_STAGED"' EXIT
+
+  # .gitignore and .githooks/ are pure git plumbing/documentation -- never
+  # real service secrets, but prose in there (e.g. "# ---- secrets: never
+  # track ----") can superficially look like a "key: value" assignment to the
+  # keyword check below. Excluded from the copy so neither that check nor
+  # trufflehog (which also scans this tmpdir) waste a false positive on them.
+  while IFS= read -r -d '' file; do
+    case "$file" in
+      .gitignore|.githooks/*) continue ;;
+    esac
+    mkdir -p "$TMPDIR_STAGED/$(dirname "$file")"
+    git show ":$file" > "$TMPDIR_STAGED/$file" 2>/dev/null || true
+  done < <(git diff --cached --name-only --diff-filter=ACM -z)
+
+  if command -v trufflehog >/dev/null 2>&1; then
+    echo "pre-commit: running trufflehog on staged changes..."
+    TH_OUTPUT="$(trufflehog filesystem "$TMPDIR_STAGED" --json --no-verification --no-update \
+      --results=verified,unverified,unknown,filtered_unverified 2>/dev/null)"
+    if [ -n "$TH_OUTPUT" ]; then
+      echo "pre-commit: trufflehog found a potential secret in the staged changes -- commit blocked."
+      echo "$TH_OUTPUT" | python3 -c "
+import sys, json
+tmpdir_prefix = '$TMPDIR_STAGED/'
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        f = json.loads(line)
+    except json.JSONDecodeError:
+        continue
+    meta = f.get('SourceMetadata', {}).get('Data', {}).get('Filesystem', {})
+    path = meta.get('file', '?')
+    if path.startswith(tmpdir_prefix):
+        path = path[len(tmpdir_prefix):]
+    ln = meta.get('line', '?')
+    detector = f.get('DetectorName', '?')
+    print(f'  {path}:{ln}  ({detector})')
+"
+      FAIL=1
+    fi
+  else
+    echo "pre-commit: WARNING trufflehog not installed -- skipping that check" >&2
+  fi
+
+  if command -v detect-secrets >/dev/null 2>&1; then
+    echo "pre-commit: running detect-secrets on staged changes..."
+    # detect-secrets has an undocumented quirk: an ABSOLUTE --source path
+    # silently returns zero results, even with --all-files. Only a path
+    # relative to the current directory works reliably -- so cd into the
+    # tmpdir and scan "." rather than passing $TMPDIR_STAGED directly.
+    DS_OUTPUT="$(cd "$TMPDIR_STAGED" && detect-secrets scan --all-files . 2>/dev/null)"
+    DS_FINDINGS="$(echo "$DS_OUTPUT" | python3 -c "
+import sys, json, re
+
+root = sys.argv[1]
+# detect-secrets' KeywordDetector matches purely on the KEY name -- it cannot
+# tell a real secret from our own already-redacted 'KEY = REDACTED' output, so
+# every properly sanitized file would otherwise re-trigger this check forever.
+# Suppress a finding only when the flagged line itself is one of our two
+# known-safe placeholder shapes (the literal REDACTED marker, or a \x24VAR/
+# \x24{VAR} reference) -- anything else still blocks, including a REDACTED
+# line that also has a second, un-redacted secret elsewhere on it.
+dollar_expr_re = re.compile(r'\x24\{[^}]*\}|\x24\w+')
+
+def is_placeholder_line(line):
+    masked = dollar_expr_re.sub('', line)
+    return 'REDACTED' in masked
+
+try:
+    d = json.load(sys.stdin)
+except json.JSONDecodeError:
+    sys.exit(0)
+
+for path, findings in d.get('results', {}).items():
+    rel = path[2:] if path.startswith('./') else path
+    full = root + '/' + rel
+    try:
+        with open(full, encoding='utf-8', errors='ignore') as fh:
+            lines = fh.readlines()
+    except OSError:
+        lines = []
+    for f in findings:
+        ln = f.get('line_number')
+        content = lines[ln - 1] if isinstance(ln, int) and 0 < ln <= len(lines) else ''
+        if is_placeholder_line(content):
+            continue
+        print(f'  {rel}:{ln}  ({f.get(\"type\", \"detect-secrets\")})')
+" "$TMPDIR_STAGED")"
+    if [ -n "$DS_FINDINGS" ]; then
+      echo "pre-commit: detect-secrets found a potential secret in the staged changes -- commit blocked."
+      echo "$DS_FINDINGS"
+      FAIL=1
+    fi
+  else
+    echo "pre-commit: WARNING detect-secrets not installed -- skipping that check" >&2
+  fi
+
+  echo "pre-commit: running key-name pattern check on staged changes..."
+  KEYWORD_OUTPUT="$(python3 -c "
+import os, re, sys
+
+root = sys.argv[1]
+keyword = r'(?:PASSWORD|PASSWD|PWD|REQUIREPASS|MASTERAUTH|SECRET|TOKEN|API[_-]?KEY|PRIVATE[_-]?KEY|CREDENTIAL|ACCESS[_-]?KEY|CLIENT[_-]?SECRET|PASSPHRASE|SIGNING)'
+assignment_re = re.compile(rf'(?i){keyword}\w*\s*[:=]\s*([\"\']?)([^\"\'<>\s]+)\1')
+space_re = re.compile(rf'(?i)^\s*\S*{keyword}\S*\s+([\"\']?)([^\"\'<>\s]+)\1\s*\$')
+xml_re = re.compile(rf'(?i)<({keyword}\w*)>([^<]+)</\1>')
+# Quoted bare key, e.g. Ruby hash-rocket 'password' => 'value' or JSON-style
+# \"secret_key\": \"value\" -- see the matching comment in
+# sanitize_service_files.py's _QUOTED_KEY_ASSIGNMENT_RE for why assignment_re
+# alone can't reach this shape (the closing quote right after the keyword
+# blocks its \\w*\\s*[:=] requirement).
+quoted_key_re = re.compile(rf'(?i)[\"\']{keyword}\w*[\"\']\s*(?:=>|[:=])\s*([\"\']?)([^\"\'<>\s]+)\1')
+# Bash/ERB-style \x24{VAR:-default} or \x24VAR expansion -- \x24 is the dollar
+# character, written as a hex escape (not a literal \"\x24\") so nothing here
+# ever looks like a shell variable to the bash heredoc this is embedded in.
+# The \":\" in \"\x24{SMTP_PASSWORD:-}\" is structurally identical to a
+# \"key: value\" separator, and the NAME portion can legitimately contain any
+# tracked keyword (SMTP_PASSWORD is a completely normal variable name) -- so
+# this masks out such spans before matching, the same fix and same reasoning
+# as sanitize_service_files.py's _mask_dollar_expressions.
+dollar_expr_re = re.compile(r'\x24\{[^}]*\}|\x24\w+')
+
+def mask_dollar_expressions(line):
+    return dollar_expr_re.sub(lambda m: ' ' * len(m.group(0)), line)
+
+def is_placeholder(val):
+    # \x24VAR/\x24{VAR} references, and our own REDACTED placeholder -- without
+    # the latter, a properly-sanitized 'token = \"REDACTED\"' line still looks
+    # like a fresh secret to this same pattern and would block forever.
+    return val.startswith(chr(0x24)) or val == 'REDACTED'
+
+for dirpath, _, filenames in os.walk(root):
+    for name in filenames:
+        path = os.path.join(dirpath, name)
+        rel = os.path.relpath(path, root)
+        try:
+            with open(path, encoding='utf-8') as f:
+                lines = f.readlines()
+        except (UnicodeDecodeError, ValueError):
+            continue
+        for i, line in enumerate(lines, start=1):
+            masked = mask_dollar_expressions(line)
+            found = False
+            for rx in (assignment_re, space_re, quoted_key_re):
+                m = rx.search(masked)
+                if m and m.group(2) and not is_placeholder(m.group(2)):
+                    found = True
+            m = xml_re.search(masked)
+            if m and m.group(2).strip() and not is_placeholder(m.group(2).strip()):
+                found = True
+            if found:
+                print(f'  {rel}:{i}  (key-name pattern)')
+" "$TMPDIR_STAGED")"
+  if [ -n "$KEYWORD_OUTPUT" ]; then
+    echo "pre-commit: key-name pattern check found a potential secret in the staged changes -- commit blocked."
+    echo "$KEYWORD_OUTPUT"
+    FAIL=1
+  fi
+fi
+
+if [ "$FAIL" -ne 0 ]; then
+  echo
+  echo "pre-commit: commit blocked. Review the finding(s) above (file/line/rule only, no secret text)."
+  echo "If it's a genuine false positive, bypass with 'git commit --no-verify' -- but check first."
+  exit 1
+fi
+
+exit 0

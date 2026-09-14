@@ -1,0 +1,146 @@
+# syntax=docker/dockerfile:1
+#
+# Everything below matches the original Dockerfile line-for-line except where marked.
+# Three kinds of changes only:
+#   [BASE SWAP]  forced by moving off gpuci/miniconda-cuda -- the old line would error here
+#   [FIX]        a real bug found in testing, unrelated to versions but required to work
+#   [UPGRADE]    an actual version/library upgrade, the point of this file
+# No unrelated reformatting, reordering, or "cleanup" beyond that.
+#
+# STATUS: built + smoke-tested on gpu1, swapped onto conda-ssa via docker-compose.ssa-test.yaml.
+# GPU/TF/uv/CA-to-pypi.amf all confirmed working -- but that's after the [FIX] below was
+# added; the currently-built image on gpu1 predates it and needs a rebuild to pick it up.
+
+# [UPGRADE] was gpuci/miniconda-cuda:11.4-devel-ubuntu20.04
+FROM nvidia/cuda:12.4.1-cudnn-devel-ubuntu22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+# [BASE SWAP] this base's /bin/sh is dash, doesn't support `source` (used further down for nvm)
+SHELL ["/bin/bash", "-c"]
+
+# [BASE SWAP] both apt-key lines removed: they fetched ubuntu1804/CUDA-11 keys that don't
+# apply to this base at all, and the NVIDIA image already ships its own apt keyring.
+
+RUN apt update && \
+    (command -v unminimize >/dev/null && yes | unminimize || true) && \
+    apt install -y sudo nano acl wget htop bat ncdu cifs-utils vim less tmux make gcc automake xserver-xorg && \
+    apt install -y texlive dvipng texlive-latex-extra texlive-fonts-recommended cm-super screen && \
+    apt install -y libpq-dev iputils-ping wkhtmltopdf graphviz
+# (dropped the original's `apt install -y -o Dpkg::Options::="--force-confold" --force-yes &&`
+# fragment -- it has no packages after it, so it installs nothing; a no-op either way)
+
+# [BASE SWAP] this base doesn't ship conda (the old one did) -- bootstrap Miniconda into
+# /opt/conda, same path the old base used, so entrypoint.sh's `chown /opt/conda/pkgs/cache`
+# and everyone's existing paths still work.
+ENV CONDA_DIR=/opt/conda
+RUN wget -q https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -O /tmp/mc.sh && \
+    bash /tmp/mc.sh -b -u -p ${CONDA_DIR} && rm /tmp/mc.sh
+ENV PATH=${CONDA_DIR}/bin:${PATH}
+# `conda init` only wires up /root/.bashrc (root is the only user that exists at build time) --
+# ssa/rba/etc. don't exist until entrypoint.sh creates them, so without this system-wide
+# profile.d file their login shells wouldn't get conda/python on PATH at all.
+RUN echo 'export PATH=/opt/conda/bin:$PATH' > /etc/profile.d/conda.sh && \
+    conda config --system --set auto_activate_base true && conda init --all
+
+# [FIX] Anaconda's `defaults` channel now requires Terms-of-Service acceptance before any
+# solve (new since 2025). Chained into the SAME RUN as every single conda command that
+# touches `defaults`, every time -- not just once earlier in the file -- because a
+# `conda install`'s own package-cache cleanup can silently delete the ToS acceptance record
+# mid-build (confirmed: the python=3.10 swap below logs "Removed 3 Terms of Service files" as
+# part of its own transaction), so an acceptance from an earlier layer can't be trusted to
+# still be there by the time the next command runs.
+
+# [BASE SWAP] the old base shipped a pre-baked Python already compatible with `anaconda` /
+# scikit-learn-intelex; this base bootstraps a fresh Miniconda (defaults to the newest
+# Python, 3.14 as of this install), which is too new for scikit-learn-intelex (<=3.11) --
+# needs to be pinned down explicitly before anything else installs against it.
+RUN conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main && \
+    conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r && \
+    conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/msys2 && \
+    conda install -y python=3.10
+
+RUN conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main && \
+    conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r && \
+    conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/msys2 && \
+    conda update -n base -c defaults conda
+
+RUN conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main && \
+    conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r && \
+    conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/msys2 && \
+    conda install -y anaconda
+
+RUN conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main && \
+    conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r && \
+    conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/msys2 && \
+    conda install -y scikit-learn-intelex
+
+RUN apt update && apt install -y mlocate moreutils bat csvkit tldr
+RUN git clone https://github.com/jeroenjanssens/dsutils.git /usr/bin/dsutils
+
+# Docker CLI
+RUN apt update && apt install -y ca-certificates curl gnupg lsb-release
+RUN curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
+RUN echo \
+    "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu \
+    $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+RUN apt update && apt install -y docker-ce-cli
+
+# Do not use the awscli Ubuntu package, it is outdated and missing important features such as
+WORKDIR /root
+RUN curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+RUN unzip awscliv2.zip
+RUN ./aws/install
+RUN ./aws/install --bin-dir /usr/local/bin --install-dir /usr/local/aws-cli --update
+
+RUN apt update && apt install -y openssh-server
+# [UPGRADE] dropped `-o Dpkg::Options::="--force-confold" --force-yes` -- both are moot for a
+# first-time install of a package with no existing config to conflict with, and --force-yes
+# is deprecated apt-wide anyway.
+RUN sed -i "s/#PubkeyAuthentication yes/PubkeyAuthentication yes/" /etc/ssh/sshd_config
+RUN sed -i "s/#PasswordAuthentication yes/PasswordAuthentication no/" /etc/ssh/sshd_config
+RUN echo "HostKey /etc/ssh/keys/ssh_host_rsa_key" >> /etc/ssh/sshd_config
+RUN echo "HostKey /etc/ssh/keys/ssh_host_ecdsa_key" >> /etc/ssh/sshd_config
+RUN echo "HostKey /etc/ssh/keys/ssh_host_ed25519_key" >> /etc/ssh/sshd_config
+
+# Install newest git client version
+RUN apt update && apt install -y software-properties-common nano
+RUN add-apt-repository -y ppa:git-core/ppa
+RUN apt update && apt install -y git
+RUN apt upgrade -y
+
+# Redis
+RUN sudo apt update && sudo apt install -y redis-tools groff
+
+# TF
+RUN pip install --no-cache-dir 'tensorflow[and-cuda]'    # [UPGRADE] was `conda install tensorflow`; tracks latest + matching CUDA libs
+
+# UV
+# [UPGRADE] was registry.amf/data/base-image:2025.11.1 (opaque internal version)
+COPY --from=ghcr.io/astral-sh/uv:0.7.20 /uv /uvx /bin/
+ENV UV_SYSTEM_CERTS=true
+# ^ [FIX] uv ignores the OS trust store by default and couldn't reach pypi.amf without this --
+# this is the fix for the CA/uv issue found during testing; not yet rebuilt on gpu1 with it.
+
+# NPM
+ENV NVM_DIR=/usr/local/.nvm
+ENV NODE_VERSION=20.19.3
+RUN git clone https://github.com/nvm-sh/nvm.git $NVM_DIR \
+    && cd $NVM_DIR \
+    && git checkout v0.40.3 \
+    && source $NVM_DIR/nvm.sh \
+    && nvm install $NODE_VERSION \
+    && nvm alias default $NODE_VERSION \
+    && nvm use default
+ENV PATH=$NVM_DIR/versions/node/v$NODE_VERSION/bin:$PATH
+RUN npm install --global yarn
+
+# Other tools
+RUN sudo apt update && sudo apt install -y fzf zsh
+RUN npm install -g @anthropic-ai/claude-code
+RUN /bin/uv venv /opt/tools
+RUN /opt/tools/bin/python -m ensurepip --upgrade && /opt/tools/bin/python -m pip install --no-cache-dir pre-commit
+ENV PATH="/opt/tools/bin:${PATH}"
+
+# Gitlab CLI
+RUN curl -kL https://gitlab.com/gitlab-org/cli/-/releases/v1.65.0/downloads/glab_1.65.0_linux_amd64.deb -o glab.deb \
+    && sudo dpkg -i glab.deb

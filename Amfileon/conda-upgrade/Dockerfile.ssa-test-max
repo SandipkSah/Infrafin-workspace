@@ -1,0 +1,132 @@
+# syntax=docker/dockerfile:1
+#
+# Everything below matches the original Dockerfile line-for-line except where marked.
+# Two kinds of changes only:
+#   [BASE SWAP]  forced by moving off gpuci/miniconda-cuda -- the old line would error here
+#   [UPGRADE]    an actual version/library upgrade, the point of this file
+# No unrelated reformatting, reordering, or "cleanup" beyond that.
+# [UPGRADE] uv, floats to latest by default; freeze it with --build-arg UV_VERSION=x.y.z
+# (e.g. right before handing off for team testing, so the build isn't a moving target)
+ARG UV_VERSION=latest
+FROM ghcr.io/astral-sh/uv:${UV_VERSION} AS uv
+
+# [UPGRADE] was gpuci/miniconda-cuda:11.4-devel-ubuntu20.04
+# 12.4.x has no ubuntu24.04 tag on Docker Hub -- checked directly; 12.6.3 is the
+# closest available and within the forward-compat range already proven on gpu1's driver.
+FROM nvidia/cuda:12.6.3-cudnn-devel-ubuntu24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+# [BASE SWAP] this base's /bin/sh is dash, doesn't support `source` (used further down for nvm)
+SHELL ["/bin/bash", "-c"]
+
+# [BASE SWAP] both apt-key lines removed: they fetched ubuntu1804/CUDA-11 keys that don't
+# apply to this base at all, and the NVIDIA image already ships its own apt keyring.
+
+RUN apt update && \
+    (command -v unminimize >/dev/null && yes | unminimize || true) && \
+    apt install -y sudo nano acl wget htop bat ncdu cifs-utils vim less tmux make gcc automake xserver-xorg && \
+    apt install -y texlive dvipng texlive-latex-extra texlive-fonts-recommended cm-super screen && \
+    apt install -y libpq-dev iputils-ping wkhtmltopdf graphviz
+# (dropped the original's `apt install -y -o Dpkg::Options::="--force-confold" --force-yes &&`
+# fragment -- it has no packages after it, so it installs nothing; a no-op either way)
+
+# [UPGRADE] Miniforge (conda-forge by default) instead of the old base's inherited conda +
+# Anaconda's `defaults` channel. This is the actual mechanism for "upgrade as many libs as
+# possible" -- the old `anaconda` metapackage is a curated, deliberately-conservative bundle;
+# no version bump of it gets you current packages, only a channel/mechanism change does.
+ENV CONDA_DIR=/opt/conda
+RUN wget -q https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-x86_64.sh -O /tmp/mc.sh && \
+    bash /tmp/mc.sh -b -u -p ${CONDA_DIR} && rm /tmp/mc.sh
+ENV PATH=${CONDA_DIR}/bin:${PATH}
+# `conda init` only wires up /root/.bashrc (root is the only user that exists at build time) --
+# ssa/rba/etc. don't exist until entrypoint.sh creates them, so without this system-wide
+# profile.d file their login shells wouldn't get conda/python on PATH at all.
+RUN echo 'export PATH=/opt/conda/bin:$PATH' > /etc/profile.d/conda.sh && \
+    conda config --system --set auto_activate_base true && conda init --all
+
+# Split into several smaller installs rather than one 30-package unpinned solve: each step
+# resolves against an already-solved environment (much smaller search space, much faster),
+# and if a real conflict exists, it surfaces against a small group instead of hanging on one
+# opaque all-at-once solve (conda_libmamba_solver's own conflict-explainer can crash on those
+# large solves -- "RuntimeError: std::get: wrong index for variant" -- masking the real error).
+RUN conda install -y -c conda-forge --override-channels python=3.12
+RUN conda install -y -c conda-forge --override-channels numpy scipy pandas scikit-learn scikit-learn-intelex
+RUN conda install -y -c conda-forge --override-channels matplotlib seaborn plotly bokeh
+RUN conda install -y -c conda-forge --override-channels jupyterlab ipykernel ipywidgets notebook
+RUN conda install -y -c conda-forge --override-channels statsmodels numba sympy networkx
+RUN conda install -y -c conda-forge --override-channels pyarrow sqlalchemy psycopg2 h5py
+RUN conda install -y -c conda-forge --override-channels dask distributed
+RUN conda install -y -c conda-forge --override-channels requests pyyaml tqdm rich
+RUN conda install -y -c conda-forge --override-channels black isort flake8 pylint mypy pytest
+RUN conda clean -afy
+
+RUN apt update && apt install -y plocate moreutils bat csvkit tldr    # [BASE SWAP] mlocate -> plocate (removed in noble)
+RUN git clone https://github.com/jeroenjanssens/dsutils.git /usr/bin/dsutils
+
+# Docker CLI
+RUN apt update && apt install -y ca-certificates curl gnupg lsb-release
+RUN curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
+RUN echo \
+    "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu \
+    $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+RUN apt update && apt install -y docker-ce-cli
+
+# Do not use the awscli Ubuntu package, it is outdated and missing important features such as
+WORKDIR /root
+RUN curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+RUN unzip awscliv2.zip
+RUN ./aws/install
+RUN ./aws/install --bin-dir /usr/local/bin --install-dir /usr/local/aws-cli --update
+
+RUN apt update && apt install -y openssh-server
+# [UPGRADE] dropped `-o Dpkg::Options::="--force-confold" --force-yes` -- both are moot for a
+# first-time install of a package with no existing config to conflict with, and --force-yes
+# is deprecated apt-wide anyway.
+RUN sed -i "s/#PubkeyAuthentication yes/PubkeyAuthentication yes/" /etc/ssh/sshd_config
+RUN sed -i "s/#PasswordAuthentication yes/PasswordAuthentication no/" /etc/ssh/sshd_config
+RUN echo "HostKey /etc/ssh/keys/ssh_host_rsa_key" >> /etc/ssh/sshd_config
+RUN echo "HostKey /etc/ssh/keys/ssh_host_ecdsa_key" >> /etc/ssh/sshd_config
+RUN echo "HostKey /etc/ssh/keys/ssh_host_ed25519_key" >> /etc/ssh/sshd_config
+
+# Install newest git client version
+RUN apt update && apt install -y software-properties-common nano
+RUN add-apt-repository -y ppa:git-core/ppa
+RUN apt update && apt install -y git
+RUN apt upgrade -y
+
+# Redis
+RUN sudo apt update && sudo apt install -y redis-tools groff
+
+# TF
+RUN pip install --no-cache-dir --upgrade 'tensorflow[and-cuda]'    # [UPGRADE] was `conda install tensorflow` -> 2.20.0; this tracks latest + matching CUDA libs
+
+# UV
+# [UPGRADE] was registry.amf/data/base-image:2025.11.1 (opaque internal version)
+COPY --from=uv /uv /uvx /bin/
+ENV UV_SYSTEM_CERTS=true
+# ^ [UPGRADE-adjacent fix] uv ignores the OS trust store by default and can't reach pypi.amf
+# without this -- found during testing, not a version bump, but required for uv to work at all.
+
+# NPM
+ENV NVM_DIR=/usr/local/.nvm
+ENV NODE_VERSION=20.19.3
+RUN git clone https://github.com/nvm-sh/nvm.git $NVM_DIR \
+    && cd $NVM_DIR \
+    && git checkout v0.40.3 \
+    && source $NVM_DIR/nvm.sh \
+    && nvm install $NODE_VERSION \
+    && nvm alias default $NODE_VERSION \
+    && nvm use default
+ENV PATH=$NVM_DIR/versions/node/v$NODE_VERSION/bin:$PATH
+RUN npm install --global yarn
+
+# Other tools
+RUN sudo apt update && sudo apt install -y fzf zsh
+RUN npm install -g @anthropic-ai/claude-code
+RUN /bin/uv venv /opt/tools
+RUN /opt/tools/bin/python -m ensurepip --upgrade && /opt/tools/bin/python -m pip install --no-cache-dir pre-commit
+ENV PATH="/opt/tools/bin:${PATH}"
+
+# Gitlab CLI
+RUN curl -kL https://gitlab.com/gitlab-org/cli/-/releases/v1.117.0/downloads/glab_1.117.0_linux_amd64.deb -o glab.deb \
+    && sudo dpkg -i glab.deb

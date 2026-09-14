@@ -1,0 +1,82 @@
+name: pg-ha-rehearsal
+
+# Local, throwaway rehearsal of the Amfileon Postgres HA design.
+# Mirrors: 3-member etcd (for quorum drills) + 2 Patroni/Postgres nodes (primary + hot standby).
+# Deliberately OMITS: mTLS on etcd, and vip-manager/VIP (the VIP move can only be tested on real
+# hardware — rung 4). Everything else here behaves like the real thing.
+
+networks:
+  reh:
+
+volumes:
+  pg1data:
+  pg2data:
+
+# ---------- etcd: 3 members, plaintext (throwaway) ----------
+services:
+  etcd1:
+    image: quay.io/coreos/etcd:v3.5.21
+    hostname: etcd1
+    networks: [reh]
+    ports: ["2379:2379"]           # exposed so you can run etcdctl from the Mac
+    command: >
+      etcd --name etcd1
+      --initial-cluster etcd1=http://etcd1:2380,etcd2=http://etcd2:2380,etcd3=http://etcd3:2380
+      --initial-cluster-state new --initial-cluster-token reh
+      --initial-advertise-peer-urls http://etcd1:2380
+      --listen-peer-urls http://0.0.0.0:2380
+      --listen-client-urls http://0.0.0.0:2379
+      --advertise-client-urls http://etcd1:2379
+
+  etcd2:
+    image: quay.io/coreos/etcd:v3.5.21
+    hostname: etcd2
+    networks: [reh]
+    command: >
+      etcd --name etcd2
+      --initial-cluster etcd1=http://etcd1:2380,etcd2=http://etcd2:2380,etcd3=http://etcd3:2380
+      --initial-cluster-state new --initial-cluster-token reh
+      --initial-advertise-peer-urls http://etcd2:2380
+      --listen-peer-urls http://0.0.0.0:2380
+      --listen-client-urls http://0.0.0.0:2379
+      --advertise-client-urls http://etcd2:2379
+
+  etcd3:
+    image: quay.io/coreos/etcd:v3.5.21
+    hostname: etcd3
+    networks: [reh]
+    command: >
+      etcd --name etcd3
+      --initial-cluster etcd1=http://etcd1:2380,etcd2=http://etcd2:2380,etcd3=http://etcd3:2380
+      --initial-cluster-state new --initial-cluster-token reh
+      --initial-advertise-peer-urls http://etcd3:2380
+      --listen-peer-urls http://0.0.0.0:2380
+      --listen-client-urls http://0.0.0.0:2379
+      --advertise-client-urls http://etcd3:2379
+
+  # ---------- Postgres + Patroni: primary + hot standby ----------
+  pg1:
+    build: .
+    image: pg-patroni:16
+    hostname: pg1
+    networks: [reh]
+    ports: ["5432:5432"]           # psql from the Mac: host 5432 -> pg1
+    user: postgres
+    entrypoint: ["patroni", "/etc/patroni.yml"]
+    volumes:
+      - ./patroni1.yml:/etc/patroni.yml:ro
+      - pg1data:/var/lib/postgresql
+    depends_on: [etcd1, etcd2, etcd3]
+
+  pg2:
+    build: .
+    image: pg-patroni:16
+    hostname: pg2
+    networks: [reh]
+    ports: ["5433:5432"]           # host 5433 -> pg2
+    user: postgres
+    entrypoint: ["patroni", "/etc/patroni.yml"]
+    volumes:
+      - ./patroni2.yml:/etc/patroni.yml:ro
+      - pg2data:/var/lib/postgresql
+    depends_on: [etcd1, etcd2, etcd3]

@@ -1,0 +1,199 @@
+# .gitignore for db1's git-init'd /srv/ (repo root is /srv/, not /srv/docker/
+# -- other /srv siblings exist: cron/, docker-replicated/). Host-specific --
+# see gitignore-db2 for db2's separate copy; do not merge the two, since a
+# finding specific to one host (a stale duplicate directory, a data-path
+# only that host has) can wrongly exclude something the other host actually
+# needs tracked, or leave a no-op pattern for something that never existed
+# there in the first place. `git init` runs from /srv/ itself, not
+# /srv/docker/.
+#
+# ---- scope: only docker/ is tracked, everything else at /srv root is ignored ----
+# cron/, docker-replicated/, glusterfs/ (and anything else that shows up at the
+# /srv root later) are out of scope for this repo entirely -- not audited, not
+# reviewed for secrets, just excluded outright. Revisit deliberately if this
+# repo's scope is ever meant to grow beyond docker/.
+/*
+!/docker/
+!/.gitignore
+!/.githooks/
+
+# ---- everything below only ever applies inside docker/, since that's the only
+#      top-level entry not excluded above ----
+#
+# This file holds only host-wide GENERIC rules (secret file patterns, runtime
+# data, stale directories, nested repos). It deliberately does NOT list any
+# specific per-service file (e.g. "gitlab-runner/config.toml") -- those live
+# in a per-directory .gitignore instead (e.g. /srv/docker/gitlab-runner/.gitignore
+# containing just "config.toml"), one level down, right next to the file it
+# excludes. That's because db1 and db2 can have same-named service
+# directories (watchtower, restic, patroni, gitlab-runner, ...) whose actual
+# content differs -- a file secret-bearing on one host may already be clean
+# on the other. A per-directory .gitignore is self-contained and host-specific
+# by construction; a shared root-level list of specific paths is not, and
+# copying one host's findings into the other's repo would wrongly exclude a
+# file that host never needed excluded.
+#
+# sanitize_service_files.py --write generates each service's .gitignore for
+# you automatically (only for services where it actually found something to
+# redact) -- review its output and copy it to
+# /srv/docker/<service>/.gitignore. This root file only needs manual edits
+# for genuinely host-wide patterns or genuinely root-level (/docker/<file>)
+# loose files.
+
+# ---- secrets: never track ----
+.env
+.env.*
+*.env
+*.env_*
+*.key
+*.pem
+*.pfx
+*.p12
+*.der
+htpasswd
+users.acl
+ldap.toml
+
+# NOTE: .gitignore does NOT support trailing inline comments -- a "#"
+#      after a pattern on the same line is parsed as part of the pattern
+#      itself (making it match nothing), not stripped as a comment. Comments
+#      must be on their own line, before the pattern.
+#
+# /srv/docker/config.toml on db1 is currently an EMPTY directory (checked
+# directly) -- nothing to exclude there right now. Not the same finding as
+# db2's config.toml (a real file with a runner-registration token in it) --
+# see gitignore-db2 for that one. Revisit if this ever becomes a real file.
+
+# ---- loose top-level files at /srv/docker root, deferred for now (not yet
+#      reviewed for secrets -- run_all.sh only iterates service directories,
+#      so these were never scanned). /docker/minio.tar.gz is already caught
+#      by the *.tar.gz pattern below; these two aren't covered by anything
+#      else. Revisit deliberately later; excluded here in the meantime so
+#      they don't get swept into a commit unreviewed. ----
+/docker/update_watchtower_images.py
+/docker/watchtower_updates.txt
+
+# ---- runtime data / logs / backups: not config, don't track ----
+*.log
+*.rdb
+data/
+restored-data/
+*.tar
+*.tar.gz
+*.tar.bz2
+
+# ---- editor/OS artifacts: never intentional, safe to exclude anywhere ----
+*.swp
+*.swo
+*~
+.DS_Store
+
+# ---- a log file that doesn't match *.log above because of its actual
+#      extension -- found via `find -size +50M`: 91M of ldap/'s 92M total is
+#      this one file. Anchored since "logs.txt" isn't a name worth banning
+#      globally (too generic, could collide with something legitimate
+#      elsewhere). ----
+/docker/ldap/logs.txt
+
+# ---- large, non-standard-named data directories found by actual `du` review
+#      (db1) -- same reasoning as data/ above, just not named "data" so the
+#      generic pattern doesn't reach them. Anchored to the exact path: these
+#      are genuinely huge (105G, 2.5G, 7G) runtime data/cache/backup dirs
+#      sitting alongside otherwise-small config in the same service
+#      directory, not a reason to exclude the whole service. ----
+/docker/devpi/devpi-data/
+/docker/devpi/.indices/
+/docker/gitlab-ee/metrics/
+/docker/xpressfeed/backup/
+/docker/xpressfeed/Desktop/
+
+# ---- vendored third-party binaries bundled into a service's runtime data
+#      dir, found via `git ls-files` size review -- not config, not secrets,
+#      just re-downloadable application dependencies that would otherwise
+#      sit in git history forever, uncompressible and undiffable. ----
+# Grafana's own plugin/runtime data dir (30-40MB binary datasource plugins);
+# grafana-loki's actual hand-authored config (datasources/, dashboards/)
+# lives in separate sibling directories and stays tracked normally.
+/docker/grafana-loki/grafana/
+# etcd release tarball extracted directly into patroni/ instead of using a
+# container image (etcd + etcdutl binaries, ~36M).
+/docker/patroni/etcd-v3.5.9-linux-amd64/
+
+# ---- nested repos: managed by their own .git, not this one ----
+# Found via a full `find /srv/docker -name .git` sweep, not just the
+# nested-git dirs that were already obvious by name -- dockprom/,
+# netbox-docker/, elastdocker/ (customized clones of upstream projects) are
+# the ones already known; shhh/, docker-rclone-sync/, samba-ldap/ are entire
+# service directories that turned out to ALSO be their own git clones.
+# Excluded wholesale here so the top-level repo doesn't double-track their
+# files under two different repos' history. Commit their local changes
+# inside each directory itself: `cd docker/dockprom && git add/commit`
+# (same for the others). db1 has no zulip/ -- that's db2's nested repo, see
+# gitignore-db2.
+dockprom/
+netbox-docker/
+elastdocker/
+shhh/
+docker-rclone-sync/
+samba-ldap/
+
+# ---- nested repos living in a SUBDIRECTORY of an otherwise-normal service --
+# same reasoning as above (own .git, own history, don't double-track), but
+# narrow enough that the rest of the service's config stays trackable:
+# uptime-kuma/'s actual config is fine, just this one report-generator clone
+# inside it isn't; same for ldap/'s webui and devpi/'s stray nested clone
+# (this is what the earlier "docker-devpi/" 288K oddity turned out to be). ----
+/docker/uptime-kuma/Uptime-Kuma-Report/
+/docker/ldap/ldap-passwd-webui/
+/docker/devpi/docker-devpi/
+
+# ---- live, dedicated secrets-management / HA-cluster services: deliberately
+#      excluded from the bulk/scripted pass entirely (see run_all.sh's SKIP
+#      array) and handled by hand, as root, when actually working on them --
+#      but SKIP only controls the sanitizer, not git, so these need an
+#      explicit exclusion here too or `git add -A` would stage their raw,
+#      never-scanned contents. Shared across hosts; a no-op where the
+#      directory doesn't exist. ----
+vault/
+vault2/
+infisical/
+pg-cluster-instance-1/
+pg-cluster-instance-2/
+healthchecks/
+nessie/
+sentry/
+
+# ---- stale/duplicate/abandoned directories worth deleting outright, ignored here as a fallback ----
+# (grafana-loki-old/, sentry-old/, sentrytest/, infisical_test/, http-test/,
+#  gitlab-ee-failed/, *.back.yaml, *.bak, *.new.yaml -- all caught generically
+#  below; better to `rm` these than carry them forever)
+# NOTE: gitignore patterns are case-sensitive on Linux -- "*.bak" alone missed a
+# real "CA.pem.BAK" file during review (on db2). Bracket expressions below match either case.
+*.[bB][aA][kK]
+*-old/
+*_old/
+*test/
+*failed/
+*.back.yaml
+*.new.yaml
+
+# ---- cert/key material directories: never track ----
+# e.g. pg-cluster-instance-*/certs/, certs_old/, pki/, redis-staging/tmp-conf/
+certs/
+certs_old/
+pki/
+tmp-conf/
+
+# db2 had a known junk-file case (literally named ".crt"/".csr", empty
+# basename, leftover from a botched command) excluded by exact anchored path
+# -- not yet checked whether db1's proxy/ has the same issue. Worth a look:
+#   ls -la /srv/docker/proxy/ | grep -E '^\.(crt|csr)$'
+# See gitignore-db2 for that exclusion if db1 turns out to have the same thing.
+
+# ---- everything else inside docker/ ----
+# Any file not covered by a rule above (a clean docker-compose.yaml, nginx.conf,
+# healthcheck.py, redis.conf that had nothing to redact, etc.) is tracked as
+# its real, unmodified self by default. Per-service .gitignore files (one per
+# service directory, generated by sanitize_service_files.py --write when it
+# finds something, or added by hand for a known case like
+# gitlab-runner/config.toml) are what carve out the specific exceptions.

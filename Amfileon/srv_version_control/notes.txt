@@ -1,0 +1,15 @@
+will it be pushed some remote repo
+if not, do we need to ignore the secrets
+
+
+a good gitignore
+
+
+automatic commit with cronjob
+
+env variables exist inside docker compose itself can be a real problem
+
+
+dockprom has its own git
+
+

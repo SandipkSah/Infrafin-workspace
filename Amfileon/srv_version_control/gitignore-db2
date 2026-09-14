@@ -1,0 +1,129 @@
+# .gitignore for db2's git-init'd /srv/ (repo root is /srv/, not /srv/docker/
+# -- other /srv siblings exist: cron/, docker-replicated/, glusterfs/).
+# Host-specific -- see gitignore-db1 for db1's separate copy; do not merge
+# the two, since a finding specific to one host (a stale duplicate directory,
+# a data-path only that host has) can wrongly exclude something the other
+# host actually needs tracked, or leave a no-op pattern for something that
+# never existed there in the first place. `git init` runs from /srv/ itself,
+# not /srv/docker/.
+#
+# ---- scope: only docker/ is tracked, everything else at /srv root is ignored ----
+# cron/, docker-replicated/, glusterfs/ (and anything else that shows up at the
+# /srv root later) are out of scope for this repo entirely -- not audited, not
+# reviewed for secrets, just excluded outright. Revisit deliberately if this
+# repo's scope is ever meant to grow beyond docker/.
+/*
+!/docker/
+!/.gitignore
+!/.githooks/
+
+# ---- everything below only ever applies inside docker/, since that's the only
+#      top-level entry not excluded above ----
+#
+# This file holds only host-wide GENERIC rules (secret file patterns, runtime
+# data, stale directories, nested repos). It deliberately does NOT list any
+# specific per-service file -- those live in a per-directory .gitignore
+# instead (e.g. /srv/docker/gitlab-runner/.gitignore containing just
+# "config.toml"), one level down, right next to the file it excludes. That's
+# because db1 and db2 can have same-named service directories (watchtower,
+# restic, patroni, gitlab-runner, ...) whose actual content differs -- a file
+# secret-bearing on one host may already be clean on the other. A
+# per-directory .gitignore is self-contained and host-specific by
+# construction; a shared root-level list of specific paths is not, and
+# copying one host's findings into the other's repo would wrongly exclude a
+# file that host never needed excluded.
+#
+# sanitize_service_files.py --write generates each service's .gitignore for
+# you automatically (only for services where it actually found something to
+# redact) -- review its output and copy it to
+# /srv/docker/<service>/.gitignore. This root file only needs manual edits
+# for genuinely host-wide patterns or genuinely root-level (/docker/<file>)
+# loose files.
+
+# ---- secrets: never track ----
+.env
+.env.*
+*.env
+*.env_*
+*.key
+*.pem
+*.pfx
+*.p12
+*.der
+htpasswd
+users.acl
+ldap.toml
+
+# ---- known secret-bearing loose file directly at /srv/docker root (not inside
+#      any service directory, so a per-directory .gitignore doesn't apply).
+#      Anchored to that exact path -- NOT a bare "config.toml" pattern, which
+#      would also wrongly exclude an unrelated, harmless config.toml that some
+#      other service might legitimately have.
+#      NOTE: .gitignore does NOT support trailing inline comments -- a "#"
+#      after a pattern on the same line is parsed as part of the pattern
+#      itself (making it match nothing), not stripped as a comment. Comments
+#      must be on their own line, before the pattern. (A real file here, with
+#      a runner-registration token in it -- not the same as db1's config.toml,
+#      which is an empty directory.) ----
+/docker/config.toml
+
+# ---- runtime data / logs / backups: not config, don't track ----
+*.log
+*.rdb
+data/
+restored-data/
+*.tar
+*.tar.gz
+*.tar.bz2
+
+# ---- nested repos: managed by their own .git, not this one ----
+# dockprom/ and zulip/ already have their own .git (customized clones of
+# upstream projects) — excluded here so the top-level repo doesn't treat them
+# as embedded repos/gitlinks. Commit their local changes
+# (docker-compose.override.yaml, prometheus-customized.yaml,
+# compose.override.yaml, etc.) inside each directory itself:
+# `cd docker/dockprom && git add/commit` (same for zulip/).
+dockprom/
+zulip/
+
+# ---- live production Postgres HA cluster: root-only .env by design, handled
+#      by hand, as root, not through the bulk/scripted pass. ----
+pg-cluster-instance-2/
+
+# ---- stale/duplicate/abandoned directories, ignored here as a fallback ----
+# (clickhouse-external-old/, gitlab-ee-failed/, gittlab-runner/, *.back.yaml,
+#  *.bak, *.new.yaml -- better to `rm` these than carry them forever, but not
+#  this tool's call to make)
+# NOTE: gitignore patterns are case-sensitive on Linux -- "*.bak" alone missed
+# a real "CA.pem.BAK" file during review. Bracket expressions below match either case.
+*.[bB][aA][kK]
+*-old/
+*_old/
+*test/
+*failed/
+gittlab-runner/
+*.back.yaml
+*.new.yaml
+
+# ---- cert/key material directories: never track ----
+# e.g. pg-cluster-instance-2/certs/, certs_old/, pki/, redis-staging/tmp-conf/
+certs/
+certs_old/
+pki/
+tmp-conf/
+
+# ---- known junk/mistake files, left in place on disk, just not tracked ----
+# Literally named ".crt"/".csr" (empty basename) -- almost certainly leftover
+# from a botched command. Not deleted (that's a deliberate choice, not this
+# tool's call to make); anchored exact-path exclusion, NOT a blanket *.crt/*.csr
+# pattern, since real certs elsewhere in proxy/ are meant to stay tracked.
+/docker/proxy/.crt
+/docker/proxy/.csr
+
+# ---- everything else inside docker/ ----
+# Any file not covered by a rule above (a clean docker-compose.yaml, nginx.conf,
+# healthcheck.py, redis.conf that had nothing to redact, etc.) is tracked as
+# its real, unmodified self by default. Per-service .gitignore files (one per
+# service directory, generated by sanitize_service_files.py --write when it
+# finds something, or added by hand for a known case like
+# gitlab-runner/config.toml) are what carve out the specific exceptions.

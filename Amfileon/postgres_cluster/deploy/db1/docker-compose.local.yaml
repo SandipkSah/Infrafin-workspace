@@ -1,0 +1,60 @@
+name: amf-db1
+# Real host: db1 (10.10.10.20). Runs etcd1 + Spilo primary (pg1) + vip-manager.
+
+networks:
+  amf-ha:
+    external: true          # shared local "LAN"; PROD: host network / real subnet
+
+volumes:
+  pg1_data:
+
+services:
+  # ---- etcd member 1 ----
+  etcd1:
+    image: quay.io/coreos/etcd:v3.5.21
+    hostname: etcd1
+    networks: [amf-ha]
+    restart: always
+    ports: ["2379:2379"]          # exposed for etcdctl from the Mac (convenience)
+    command: >
+      etcd --name etcd1 --enable-v2=true
+      --initial-cluster etcd1=http://etcd1:2380,etcd2=http://etcd2:2380,etcd3=http://etcd3:2380
+      --initial-cluster-state new --initial-cluster-token amf
+      --initial-advertise-peer-urls http://etcd1:2380
+      --listen-peer-urls http://0.0.0.0:2380
+      --listen-client-urls http://0.0.0.0:2379
+      --advertise-client-urls http://etcd1:2379
+
+  # ---- Postgres + Patroni (Spilo), PRIMARY on first boot ----
+  pg1:
+    image: ghcr.io/zalando/spilo-17:4.0-p2
+    hostname: pg1                 # Spilo uses hostname as the Patroni member name
+    networks: [amf-ha]
+    restart: always
+    ports: ["5432:5432"]          # psql from the Mac -> pg1
+    env_file: [.env]
+    environment:
+      SCOPE: amfcluster           # all members share this -> /service/amfcluster/ in etcd
+      PGVERSION: "17"
+      ETCD_HOSTS: "'etcd1:2379','etcd2:2379','etcd3:2379'"
+    volumes:
+      - pg1_data:/home/postgres/pgdata
+    # PROD DELTA: image -> registry.amf digest; ETCD_HOSTS -> real IPs + ETCD_CACERT/CERT/KEY (v3 mTLS);
+    # network_mode: host; secrets from Infisical.
+
+  # ---- vip-manager: raises VIP 10.10.10.18 when THIS node holds the etcd leader key ----
+  vip-manager:
+    image: ghcr.io/cybertec-postgresql/vip-manager:v2.6.0   # verify/pin before prod
+    profiles: ["vip"]             # OFF for local test (no real L2 on Docker-for-Mac)
+    network_mode: host            # needs the real host net namespace to move the IP
+    cap_add: [NET_ADMIN]
+    restart: always
+    environment:
+      VIP_IP: 10.10.10.18
+      VIP_MASK: "24"
+      VIP_INTERFACE: eth0         # TODO: confirm on real db1 via `ip route get 10.10.10.1` (db2 = ens259f0np0)
+      VIP_TRIGGER_KEY: "/service/amfcluster/leader"
+      VIP_TRIGGER_VALUE: pg1      # raise VIP when leader == this node
+      VIP_DCS_TYPE: etcd
+      VIP_ETCD_ENDPOINTS: "https://10.10.10.20:2379,https://10.10.10.21:2379,https://10.10.10.13:2379"
+    # PROD: mount ./certs and set the etcd CA/cert/key; confirm exact vip-manager v2 env keys.

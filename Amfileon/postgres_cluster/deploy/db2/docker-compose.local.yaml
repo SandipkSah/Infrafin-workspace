@@ -1,0 +1,55 @@
+name: amf-db2
+# Real host: db2 (10.10.10.21). Runs etcd2 + Spilo replica (pg2) + vip-manager.
+
+networks:
+  amf-ha:
+    external: true
+
+volumes:
+  pg2_data:
+
+services:
+  # ---- etcd member 2 ----
+  etcd2:
+    image: quay.io/coreos/etcd:v3.5.21
+    hostname: etcd2
+    networks: [amf-ha]
+    restart: always
+    command: >
+      etcd --name etcd2 --enable-v2=true
+      --initial-cluster etcd1=http://etcd1:2380,etcd2=http://etcd2:2380,etcd3=http://etcd3:2380
+      --initial-cluster-state new --initial-cluster-token amf
+      --initial-advertise-peer-urls http://etcd2:2380
+      --listen-peer-urls http://0.0.0.0:2380
+      --listen-client-urls http://0.0.0.0:2379
+      --advertise-client-urls http://etcd2:2379
+
+  # ---- Postgres + Patroni (Spilo), joins as REPLICA (leader lock already held by pg1) ----
+  pg2:
+    image: ghcr.io/zalando/spilo-17:4.0-p2
+    hostname: pg2
+    networks: [amf-ha]
+    restart: always
+    ports: ["5433:5432"]          # psql from the Mac -> pg2 (host 5433)
+    env_file: [.env]
+    environment:
+      SCOPE: amfcluster
+      PGVERSION: "17"
+      ETCD_HOSTS: "'etcd1:2379','etcd2:2379','etcd3:2379'"
+    volumes:
+      - pg2_data:/home/postgres/pgdata
+
+  vip-manager:
+    image: ghcr.io/cybertec-postgresql/vip-manager:v2.6.0
+    profiles: ["vip"]
+    network_mode: host
+    cap_add: [NET_ADMIN]
+    restart: always
+    environment:
+      VIP_IP: 10.10.10.18
+      VIP_MASK: "24"
+      VIP_INTERFACE: ens259f0np0  # CONFIRMED on real db2 (2026-07-17, `ip route get 10.10.10.1`) — NOT eth0
+      VIP_TRIGGER_KEY: "/service/amfcluster/leader"
+      VIP_TRIGGER_VALUE: pg2      # <-- only difference from db1: this node's name
+      VIP_DCS_TYPE: etcd
+      VIP_ETCD_ENDPOINTS: "https://10.10.10.20:2379,https://10.10.10.21:2379,https://10.10.10.13:2379"

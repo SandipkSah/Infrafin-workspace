@@ -1,0 +1,96 @@
+name: amf-pg-db2
+# Real db2 (10.10.10.21). Deploy dir on the server: /srv/docker/pg-cluster-instance-2/
+# Single-node Spilo (Postgres+Patroni) + vip-manager + OWN dedicated etcd — now mTLS.
+#
+# CA: a brand-new CA generated specifically for this cluster (2026-07-21), deliberately
+# separate from the org-wide amf CA and from /srv/docker/patroni/ (untouched, not
+# used). Script: postgres_cluster/certs-request/gen-pgcluster-ca.sh. Server+peer certs
+# carry EKU serverAuth+clientAuth from the start (the bug that blocked the old certs).
+#
+# Ports unchanged (already open in ufw): 15432 Postgres | 18008 Patroni REST |
+# 12379/12380 etcd (now HTTPS + mTLS, was plaintext).
+#
+# ⚠️ Coordinated cutover: bring down etcd+pg2+vip-manager here AND pg1+vip-manager on
+# db1 in the same window — plaintext clients can't talk to this etcd once it flips to TLS.
+
+services:
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.21
+    network_mode: host
+    restart: always
+    command: >
+      etcd --name etcd2 --data-dir /etcd-data
+      --listen-client-urls https://0.0.0.0:12379
+      --advertise-client-urls https://10.10.10.21:12379
+      --client-cert-auth --trusted-ca-file /certs/ca.crt
+      --cert-file /certs/etcd2.server.crt --key-file /certs/etcd2.server.key
+      --listen-peer-urls https://0.0.0.0:12380
+      --initial-advertise-peer-urls https://10.10.10.21:12380
+      --peer-client-cert-auth --peer-trusted-ca-file /certs/ca.crt
+      --peer-cert-file /certs/etcd2.peer.crt --peer-key-file /certs/etcd2.peer.key
+      --initial-cluster etcd1=https://10.10.10.20:12380,etcd2=https://10.10.10.21:12380,etcd3=https://10.10.10.13:12380
+      --initial-cluster-state existing --initial-cluster-token pg-ha-cluster
+    volumes:
+      - etcd_data:/etcd-data      # WIPE before bringing up — moving from 1-member to a fresh 3-way bootstrap
+      - ./certs:/certs:ro
+
+  pg2:
+    image: ghcr.io/zalando/spilo-17:4.0-p2      # TODO(later): mirror to registry.amf + pin digest
+    network_mode: host
+    restart: always
+    depends_on: [etcd]
+    env_file: [.env]
+    environment:
+      SCOPE: amfcluster
+      PGPORT: "15432"
+      PGVERSION: "17"
+
+      ETCD3_HOSTS: "'10.10.10.20:12379','10.10.10.21:12379','10.10.10.13:12379'"
+      ETCD3_PROTOCOL: https
+      ETCD3_CACERT: /certs/ca.crt
+      ETCD3_CERT: /certs/etcd2.client.crt
+      ETCD3_KEY:  /certs/etcd2.client.key
+
+      SPILO_CONFIGURATION: |
+        postgresql:
+          listen: "0.0.0.0:15432"
+          connect_address: "10.10.10.21:15432"
+        restapi:
+          listen: "0.0.0.0:18008"
+          connect_address: "10.10.10.21:18008"
+    volumes:
+      - ./certs:/certs:ro
+      - pg2_data:/home/postgres/pgdata
+    # NOTE: host networking -> Patroni member name = host hostname ("db2"). Verify: `patronictl list`.
+
+  vip-manager:
+    build: ./vip-manager
+    image: vip-manager:4.2.0
+    network_mode: host
+    cap_add: [NET_ADMIN]
+    restart: always
+    depends_on: [etcd]
+    environment:
+      VIP_IP: 10.10.10.18
+      VIP_NETMASK: "24"
+      VIP_INTERFACE: ens259f0np0                 # CONFIRMED on db2 (2026-07-17)
+      VIP_TRIGGER_KEY: "/service/amfcluster/leader"
+      VIP_TRIGGER_VALUE: db2
+      VIP_DCS_TYPE: etcd
+      VIP_DCS_ENDPOINTS: "https://10.10.10.20:12379,https://10.10.10.21:12379,https://10.10.10.13:12379"
+      VIP_ETCD_CA_FILE:   /certs/ca.crt
+      VIP_ETCD_CERT_FILE: /certs/etcd2.client.crt
+      VIP_ETCD_KEY_FILE:  /certs/etcd2.client.key
+    volumes:
+      - ./certs:/certs:ro
+
+volumes:
+  etcd_data:
+  pg2_data:
+
+# Bring-up order (coordinated with db1 — see that file's header):
+#   1. On db1 AND db2: docker compose down   (stop everything first, both hosts)
+#   2. On db2: docker compose up -d etcd     (bring the referee up first, verify healthy)
+#   3. On db2: docker compose up -d pg2
+#   4. On db1: docker compose up -d pg1      (its ETCD3_HOSTS now points here, over TLS)
+#   5. Both hosts: docker compose up -d vip-manager
