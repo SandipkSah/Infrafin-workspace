@@ -54,6 +54,7 @@ call with a found credential or prints the credential itself.
     sanitize_service_files.py   # the main tool
     run_all.sh                  # runs it across every service dir
     apply_service.sh            # copies generated output into the real tree
+    build_env_example.py        # builds .env.example from an existing real .env (Step 8)
   env-variables/
     <service>/                  # staging output per service, one per run
       docker-compose.yaml.sanitized
@@ -257,6 +258,122 @@ every time).
 git status   # read it, don't skip this
 git commit -m "..."
 ```
+
+## Step 8 (optional, per-service, deliberate): converting to a fully working config
+
+Everything above gets you a git-trackable `.sanitized` twin per service, with
+the real file gitignored and left completely untouched — safe, but the real
+file still has real secrets sitting in it forever, unconverted.
+
+For a service you actively want to migrate further, `sanitize_service_files.py`
+can instead produce a **working** replacement for the real file itself:
+secrets become `${VAR}` references (not the literal word `REDACTED`), and the
+real value moves to `.env` — so the file you end up tracking in git is
+byte-for-byte what the service actually runs on, not just a redacted
+reference copy. This works for the compose file's `environment:` block
+(always did) *and* for single-line Ruby-hash-style secrets inside a block
+scalar like `GITLAB_OMNIBUS_CONFIG` (`key['name'] = 'value'`, `'name' => 'value'`
+— extracted the same way, not just left as `REDACTED`).
+
+This is **per-service and deliberate** — do it for a service when you've
+decided its real file should become the tracked source of truth, not as a
+blanket step for everything.
+
+### The sequence
+
+```bash
+cd /srv/docker/<service>
+# 1. back up the true original -- permanent, never deleted, holds the real secrets
+cp docker-compose.yaml docker-compose.yaml.pre-versioning-backup
+
+# 2. generate fresh, then swap the extraction in
+python3 ~/srv_version_control/scripts/sanitize_service_files.py /srv/docker/<service> --out-dir /tmp/<service>-check --write
+cp /tmp/<service>-check/<service>/docker-compose.yaml.sanitized docker-compose.yaml
+
+# 3. build/append .env with the real values (>> if .env already exists, cp if not)
+cp /tmp/<service>-check/<service>/.env.additions .env        # first time
+# cat /tmp/<service>-check/<service>/.env.additions >> .env  # .env already existed
+
+# 4. validate -- twice. Include EVERY compose file the service actually uses
+#    (docker-compose.override.yaml too, if one exists -- see gotcha below)
+docker compose -f docker-compose.yaml config > /tmp/out 2>/tmp/warn; cat /tmp/warn; rm -f /tmp/out /tmp/warn
+docker compose -f docker-compose.yaml up -d --dry-run
+
+# 5. if anything shows "Recreated" instead of "Running", check whether it
+#    PREDATES this change before assuming it's a bug in the conversion:
+docker compose -f docker-compose.yaml.pre-versioning-backup up -d --dry-run
+# same result with the untouched original? -> pre-existing (usually image
+# drift -- a newer :latest was pulled locally but the container never
+# recreated to use it), not caused by the conversion, safe to ignore.
+# DIFFERENT result (only the converted file shows "Recreated")? -> something
+# in the conversion is genuinely wrong -- investigate before moving on
+# (see the two real bugs found this way, below).
+
+# 6. update .gitignore: drop the real filename (now safe to track directly),
+#    add the .pre-versioning-backup
+cat > .gitignore <<'EOF'
+docker-compose.yaml.pre-versioning-backup
+EOF
+
+# 7. build the git-trackable .env.example companion from the real .env
+python3 ~/srv_version_control/scripts/build_env_example.py /srv/docker/<service>/.env
+cat /srv/docker/<service>/.env.example.additions >> /srv/docker/<service>/.env.example
+```
+
+Files *other* than the compose file (a service's `config.toml`, `nginx.conf`,
+XML configs, etc.) are **not** part of this conversion — they stay on the
+existing `REDACTED`-placeholder `.sanitized` pattern; this only ever applies
+to the compose file itself, since only Docker Compose resolves `${VAR}`
+references at all.
+
+### Gotchas found doing this on db2 (real bugs, not user error)
+
+- **`docker-compose.override.yaml`**: if a service has one, *every* validation
+  command needs both files (`-f docker-compose.yaml -f docker-compose.override.yaml`,
+  or no explicit `-f` at all to get Compose's own auto-merge) — passing only
+  the base file produces a false "Recreated" that has nothing to do with the
+  actual conversion.
+- **Same key name, different value, two services in one file**: Compose's
+  `${VAR}` substitution is file-wide, not per-service. If two services each
+  define e.g. `VIRTUAL_HOST` with genuinely different values, extracting both
+  to one `.env` entry means one value silently overwrites the other — found
+  via a real `minio` compose file (`minio-s3-1` and `minio-nginx`). Fixed in
+  the tool: a later occurrence of an already-seen key with a different value
+  now gets a disambiguated *source* name (`VIRTUAL_HOST_2`) — but the actual
+  environment variable name on the left stays unchanged, since that's the
+  literal name the container/nginx-proxy/docker-gen actually look for.
+- **A keyword substring inside an unrelated word**: the keyword regexes have
+  no word-boundary check (needed to still match compound names like
+  `SMTP_PASSWORD`), so `htpasswd` (contains `passwd`) inside a volume
+  bind-mount (`- ./htpasswd:/etc/nginx/htpasswd`) got misread as a "key:
+  value" assignment and the mount's *target path* got corrupted into
+  `REDACTED` — an actual functional break (nginx's basic-auth file fails to
+  mount), not just over-redaction. Fixed by masking the specific known-safe
+  whole word before keyword matching runs; extend the list in
+  `_KNOWN_SAFE_TERMS_RE` if another common term collides the same way.
+- **`_CERT_FILE`/`_CERT_AUTH`-named vars are usually false positives**: the
+  keyword classifier flags anything containing `CERT`, but these are typically
+  a file *path* or a boolean flag, not embedded key material (same shape as
+  the ClickHouse/etcd reference case below). Worth a quick length-check
+  before trusting the classification either way.
+- **A pre-existing corruption can already be sitting in a real file,
+  unrelated to anything you're doing today**: `minio`'s real
+  `docker-compose.yaml` already had a bare `MINIO_ROOT_PASSWORD: REDACTED`
+  literal (not even a `${VAR}` reference) *before* this conversion ever
+  touched it — almost certainly a leftover from much earlier work. The real
+  password only existed in the running container's baked-in environment. The
+  "validate against the untouched `.pre-versioning-backup`" step (gotcha #1
+  above) is exactly what surfaces this class of issue on *any* already-tracked
+  service, not just ones being freshly converted — worth doing as a periodic
+  health check, not only during conversion.
+
+### `.gitignore` note
+
+`.env.example` is the deliberate exception to the `.env`/`.env.*` exclusion
+rules — it needs an explicit `!.env.example` negation in the root
+`.gitignore`, or the `.env.*` pattern silently excludes it too (found only
+once a `.env.example` was actually tracked for the first time; this had been
+silently broken since the very first host's rollout).
 
 ## Reference: known false-positive shapes (don't blindly trust either signal)
 

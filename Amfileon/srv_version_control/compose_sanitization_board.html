@@ -1,0 +1,395 @@
+<title>Compose Sanitization Board</title>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>
+  :root{
+    --bg:#F6F5F1; --surface:#FFFFFF; --surface-2:#FBFAF7;
+    --ink:#1F2430; --ink-muted:#5B6472; --ink-faint:#8B93A0;
+    --accent:#3D6E8C; --accent-soft:#E4EEF3; --accent-ink:#1E4A63;
+    --good:#3F7D58; --good-soft:#E4F1E8;
+    --border:#DEDACF; --border-soft:#EAE7DD;
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --bg:#14171C; --surface:#1B1F26; --surface-2:#20242C;
+      --ink:#E7E5DE; --ink-muted:#9CA3AF; --ink-faint:#6B7280;
+      --accent:#6FA8C9; --accent-soft:#20323C; --accent-ink:#9CCBE3;
+      --good:#5FAE7A; --good-soft:#1E3327;
+      --border:#2B303A; --border-soft:#252A33;
+    }
+  }
+  :root[data-theme="dark"]{
+    --bg:#14171C; --surface:#1B1F26; --surface-2:#20242C;
+    --ink:#E7E5DE; --ink-muted:#9CA3AF; --ink-faint:#6B7280;
+    --accent:#6FA8C9; --accent-soft:#20323C; --accent-ink:#9CCBE3;
+    --good:#5FAE7A; --good-soft:#1E3327;
+    --border:#2B303A; --border-soft:#252A33;
+  }
+
+  *{box-sizing:border-box}
+  body{
+    background:var(--bg); color:var(--ink);
+    font-family:"IBM Plex Sans",system-ui,-apple-system,sans-serif;
+    padding:0 20px; padding-block:32px;
+  }
+  .wrap{max-width:820px; margin:0 auto; display:flex; flex-direction:column; gap:28px}
+
+  code, .mono{font-family:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,monospace}
+
+  header{display:flex; flex-direction:column; gap:6px}
+  h1{
+    font-size:1.7rem; font-weight:700; margin:0; letter-spacing:-0.01em;
+    text-wrap:balance;
+  }
+  .subtitle{color:var(--ink-muted); font-size:0.92rem; max-width:60ch; line-height:1.5}
+  .criterion{
+    margin-top:4px; font-size:0.82rem; color:var(--ink-muted);
+    background:var(--surface-2); border:1px solid var(--border-soft);
+    border-radius:8px; padding:10px 14px; line-height:1.5;
+  }
+  .criterion .mono{color:var(--ink)}
+
+  .stats{display:flex; gap:10px; flex-wrap:wrap}
+  .stat{
+    flex:1 1 140px; background:var(--surface); border:1px solid var(--border);
+    border-radius:10px; padding:14px 16px; display:flex; flex-direction:column; gap:4px;
+  }
+  .stat .label{font-size:0.72rem; text-transform:uppercase; letter-spacing:0.06em; color:var(--ink-faint)}
+  .stat .value{font-family:"IBM Plex Mono"; font-variant-numeric:tabular-nums; font-size:1.5rem; font-weight:600}
+  .stat .bar{height:5px; border-radius:3px; background:var(--border-soft); overflow:hidden; margin-top:2px}
+  .stat .bar > i{display:block; height:100%; background:var(--accent); border-radius:3px}
+
+  section.host{display:flex; flex-direction:column; gap:10px}
+  .host-head{
+    display:flex; align-items:baseline; justify-content:space-between; gap:12px;
+    padding-bottom:6px; border-bottom:1px solid var(--border);
+  }
+  .host-head h2{font-size:1.05rem; margin:0; font-weight:600}
+  .host-head .count{font-family:"IBM Plex Mono"; font-size:0.82rem; color:var(--ink-muted); font-variant-numeric:tabular-nums}
+  .host-note{font-size:0.8rem; color:var(--ink-muted); line-height:1.5; margin:-2px 0 2px}
+
+  ul.list{list-style:none; margin:0; padding:0; display:flex; flex-direction:column}
+  .row{
+    display:flex; align-items:flex-start; gap:10px;
+    padding:9px 4px; border-bottom:1px solid var(--border-soft);
+  }
+  .row:last-child{border-bottom:none}
+  .row input[type="checkbox"]{
+    width:17px; height:17px; margin-top:2px; accent-color:var(--good); flex:none; cursor:pointer;
+  }
+  .row label{display:flex; flex-direction:column; gap:2px; cursor:pointer; flex:1; min-width:0}
+  .row .name{font-family:"IBM Plex Mono"; font-size:0.86rem; word-break:break-word}
+  .row.done .name{color:var(--ink-muted); text-decoration:line-through; text-decoration-color:var(--good); text-decoration-thickness:1.5px}
+  .row .note{font-size:0.76rem; color:var(--ink-muted); line-height:1.4}
+  .tag{
+    font-size:0.68rem; text-transform:uppercase; letter-spacing:0.04em; font-weight:600;
+    padding:2px 7px; border-radius:5px; flex:none; align-self:flex-start; margin-top:1px;
+  }
+  .tag.partial{background:var(--accent-soft); color:var(--accent-ink)}
+  .tag.clean{background:var(--good-soft); color:var(--good)}
+
+  details.scope{
+    background:var(--surface-2); border:1px solid var(--border-soft); border-radius:8px;
+  }
+  details.scope summary{
+    cursor:pointer; padding:9px 14px; font-size:0.82rem; color:var(--ink-muted);
+    display:flex; align-items:center; gap:6px; user-select:none;
+  }
+  details.scope summary::-webkit-details-marker{display:none}
+  details.scope summary::before{content:"›"; font-family:"IBM Plex Mono"; transition:transform .15s}
+  details.scope[open] summary::before{transform:rotate(90deg)}
+  .scope-body{padding:0 14px 12px; display:flex; flex-direction:column; gap:6px}
+  .scope-row{display:flex; gap:8px; font-size:0.78rem; align-items:baseline}
+  .scope-row .name{font-family:"IBM Plex Mono"; color:var(--ink-muted); flex:none}
+  .scope-row .why{color:var(--ink-faint)}
+
+  footer{font-size:0.76rem; color:var(--ink-faint); text-align:center; padding-top:8px}
+
+  @media (max-width:480px){
+    h1{font-size:1.4rem}
+    .stat{flex:1 1 100%}
+  }
+</style>
+
+<div class="wrap">
+  <header>
+    <h1>Compose Sanitization Board</h1>
+    <p class="subtitle">Tracking db1 &amp; db2 service directories through the secret-sanitization rollout.</p>
+    <p class="criterion">
+      <strong>Done</strong> means: the real <code class="mono">docker-compose.yaml</code> itself (not a separate
+      <code class="mono">.sanitized</code> twin) has every secret field replaced with a
+      <code class="mono">${VAR}</code> reference, the true original is preserved as
+      <code class="mono">docker-compose.yaml.pre-versioning-backup</code>, a <code class="mono">.env</code>
+      holds the real values, and <code class="mono">docker compose config</code> validates clean with no
+      unresolved-variable warnings.
+    </p>
+  </header>
+
+  <div class="stats" id="stats"></div>
+
+  <div id="hosts"></div>
+
+  <footer>Checkbox state is saved in this browser only — <span class="mono">localStorage</span>, per device.</footer>
+</div>
+
+<script>
+const DATA = [
+  {
+    key: 'db2-live',
+    host: 'db2',
+    label: 'db2 — live services',
+    note: 'Each currently tracked via a separate .sanitized twin (real file gitignored). Migrate to a working docker-compose.yaml when ready.',
+    services: [
+      {name:'clickhouse-external', tagNote:'Deferred -- "not today".'},
+      {name:'clickhouse-marketdata-production', tagNote:'Deferred -- "not today".'},
+      {name:'clickhouse-marketdata-staging', tagNote:'Deferred -- "not today".'},
+      {name:'clickhouse-production', tagNote:'Deferred -- "not today".'},
+      {name:'clickhouse-staging', tagNote:'Deferred -- "not today".'},
+      {name:'gitlab-runner', done:true, tag:'clean', tagNote:'docker-compose.yaml converted & validated (dry-run: no change vs running container). config.toml/uv.toml stay on the old REDACTED pattern.'},
+      {name:'minio', done:true, tag:'clean', tagNote:'Converted & validated -- found & fixed a same-key-different-value collision bug (VIRTUAL_HOST/PORT across two services) plus a pre-existing production issue (a bare REDACTED literal already in the real file, predating today). ldap.env/nginx-console.conf stay on the old pattern.'},
+      {name:'nginx-lb', done:true, tag:'clean', tagNote:'Converted & validated, no change vs running containers.'},
+      {name:'postgres'},
+      {name:'proxy', tag:'partial', tagNote:'Real docker-compose.yaml converted. Found & fixed a real tool bug (htpasswd bind-mount corruption) along the way -- regenerating .sanitized with the fix.'},
+      {name:'redis-staging'},
+      {name:'restic', done:true, tag:'clean', tagNote:'Converted & validated (needs docker-compose.yaml + .override.yaml together). POST_COMMANDS_SUCCESS block still deferred (healthchecks-ping UUID).'},
+      {name:'restic-restore', done:true, tag:'clean', tagNote:'Converted & validated. Pre-existing image-drift recreate-need confirmed unrelated to our change.'},
+      {name:'rustfs', done:true, tag:'clean', tagNote:'Converted & validated. nginx-console.conf stays on the old pattern.'},
+      {name:'watchtower', done:true, tag:'clean', tagNote:'Converted & validated, existing .env appended.'},
+    ],
+    outOfScope: [
+      {name:'dockprom', why:'own nested .git — separate repo'},
+      {name:'zulip', why:'own nested .git — separate repo'},
+      {name:'gittlab-runner', why:'stale typo duplicate, no compose file'},
+      {name:'pg-cluster-instance-2', why:'live HA Postgres cluster — handled by hand, not scripted'},
+    ],
+  },
+  {
+    key: 'db2-archived',
+    host: 'db2',
+    label: 'db2 — _archiv/ (test bed)',
+    note: 'Used to prove out the working-config conversion before touching live services. Not part of the live repo tree\'s active scope, but real completed work.',
+    services: [
+      {name:'gitlab-ee', done:true, tag:'clean', tagNote:'Converted & validated — docker compose config resolves every ${VAR}, no REDACTED left.'},
+      {name:'gitlab2', done:true, tag:'clean', tagNote:'Converted & validated — docker compose config resolves every ${VAR}, no REDACTED left.'},
+      {name:'gitlab-registry-2', done:true, tag:'clean', tagNote:'Already used ${VAR} natively in the true original — zero redactions needed, confirmed clean.'},
+      {name:'clickhouse-external-old'},
+      {name:'ntp'},
+      {name:'infisical'},
+      {name:'patroni'},
+    ],
+  },
+  {
+    key: 'db1-live',
+    host: 'db1',
+    label: 'db1 — live services',
+    note: 'Each currently tracked via a separate .sanitized twin (real file gitignored). Migrate to a working docker-compose.yaml when ready.',
+    services: [
+      {name:'authentik'},
+      {name:'aws-s3-upload'},
+      {name:'devpi'},
+      {name:'docker-rclone-sync'},
+      {name:'filebeat'},
+      {name:'flame'},
+      {name:'gitlab'},
+      {name:'gitlab-ee', tag:'partial', tagNote:'docker-compose.yaml.sanitized upgraded to clean ${VAR} extraction & committed — real docker-compose.yaml not yet converted to a working config (live service, deliberately paused).'},
+      {name:'gitlab-runner'},
+      {name:'grafana-agent'},
+      {name:'grafana-loki'},
+      {name:'ldap'},
+      {name:'minio'},
+      {name:'mongo'},
+      {name:'mongo-production'},
+      {name:'netboot'},
+      {name:'nginx-lb'},
+      {name:'patroni'},
+      {name:'postgres'},
+      {name:'promtail'},
+      {name:'proxy'},
+      {name:'redis'},
+      {name:'redis-production'},
+      {name:'redis-sentinel'},
+      {name:'redis-staging'},
+      {name:'registry'},
+      {name:'restic'},
+      {name:'restic-restore'},
+      {name:'rustfs'},
+      {name:'samba-backup'},
+      {name:'samba-ldap'},
+      {name:'shhh'},
+      {name:'uptime-kuma'},
+      {name:'watchtower'},
+      {name:'xpressfeed'},
+      {name:'yopass'},
+    ],
+    outOfScope: [
+      {name:'sentry', why:'excluded from git entirely (data volume + your call) — not a candidate'},
+      {name:'dockprom / netbox-docker / elastdocker', why:'own nested .git — separate repos'},
+      {name:'gitlab-ee-failed / grafana-loki-old / sentry-old / sentrytest / infisical_test / http-test', why:'stale/dead duplicates'},
+      {name:'vault / vault2 / infisical / pg-cluster-instance-1 / healthchecks / nessie', why:'live/sensitive services — handled by hand, never scripted'},
+    ],
+  },
+];
+
+const STORAGE_KEY = 'compose-sanitization-board:v1';
+
+function loadState(){
+  try{
+    return JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
+  }catch(e){ return {}; }
+}
+function saveState(state){
+  try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }catch(e){}
+}
+
+function rowId(hostKey, name){ return hostKey + '::' + name; }
+
+function render(){
+  const state = loadState();
+  const hostsEl = document.getElementById('hosts');
+  hostsEl.innerHTML = '';
+
+  const totals = {}; // for stats
+
+  DATA.forEach(group => {
+    const section = document.createElement('section');
+    section.className = 'host';
+
+    const doneCount = () => group.services.filter(s => {
+      const id = rowId(group.key, s.name);
+      return s.done || state[id];
+    }).length;
+
+    const head = document.createElement('div');
+    head.className = 'host-head';
+    head.innerHTML = `<h2>${group.label}</h2><span class="count mono" data-count="${group.key}"></span>`;
+    section.appendChild(head);
+
+    if(group.note){
+      const note = document.createElement('p');
+      note.className = 'host-note';
+      note.textContent = group.note;
+      section.appendChild(note);
+    }
+
+    const ul = document.createElement('ul');
+    ul.className = 'list';
+
+    group.services.forEach(svc => {
+      const id = rowId(group.key, svc.name);
+      const checked = !!(svc.done || state[id]);
+
+      const li = document.createElement('li');
+      li.className = 'row' + (checked ? ' done' : '');
+
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.id = 'cb-' + id;
+      cb.checked = checked;
+      cb.addEventListener('change', () => {
+        const st = loadState();
+        if(cb.checked){ st[id] = true; } else { delete st[id]; }
+        saveState(st);
+        li.classList.toggle('done', cb.checked);
+        updateCounts();
+      });
+
+      const label = document.createElement('label');
+      label.setAttribute('for', cb.id);
+      const nameRow = document.createElement('div');
+      nameRow.style.display = 'flex';
+      nameRow.style.alignItems = 'center';
+      nameRow.style.gap = '8px';
+      nameRow.style.flexWrap = 'wrap';
+
+      const name = document.createElement('span');
+      name.className = 'name';
+      name.textContent = svc.name;
+      nameRow.appendChild(name);
+
+      if(svc.tag){
+        const tag = document.createElement('span');
+        tag.className = 'tag ' + svc.tag;
+        tag.textContent = svc.tag;
+        nameRow.appendChild(tag);
+      }
+      label.appendChild(nameRow);
+
+      if(svc.tagNote){
+        const note = document.createElement('span');
+        note.className = 'note';
+        note.textContent = svc.tagNote;
+        label.appendChild(note);
+      }
+
+      li.appendChild(cb);
+      li.appendChild(label);
+      ul.appendChild(li);
+    });
+
+    section.appendChild(ul);
+
+    if(group.outOfScope && group.outOfScope.length){
+      const details = document.createElement('details');
+      details.className = 'scope';
+      const summary = document.createElement('summary');
+      summary.textContent = `Out of scope (${group.outOfScope.length}) — why these aren't on the checklist`;
+      details.appendChild(summary);
+      const body = document.createElement('div');
+      body.className = 'scope-body';
+      group.outOfScope.forEach(o => {
+        const row = document.createElement('div');
+        row.className = 'scope-row';
+        row.innerHTML = `<span class="name">${o.name}</span><span class="why">— ${o.why}</span>`;
+        body.appendChild(row);
+      });
+      details.appendChild(body);
+      section.appendChild(details);
+    }
+
+    hostsEl.appendChild(section);
+    totals[group.key] = group.services.length;
+  });
+
+  updateCounts();
+}
+
+function updateCounts(){
+  const state = loadState();
+  let grandDone = 0, grandTotal = 0;
+  const statsEl = document.getElementById('stats');
+  statsEl.innerHTML = '';
+
+  DATA.forEach(group => {
+    const total = group.services.length;
+    const done = group.services.filter(s => s.done || state[rowId(group.key, s.name)]).length;
+    grandDone += done; grandTotal += total;
+
+    const countEl = document.querySelector(`[data-count="${group.key}"]`);
+    if(countEl) countEl.textContent = `${done} / ${total}`;
+  });
+
+  const overall = document.createElement('div');
+  overall.className = 'stat';
+  overall.innerHTML = `
+    <span class="label">Overall</span>
+    <span class="value">${grandDone} / ${grandTotal}</span>
+    <span class="bar"><i style="width:${grandTotal ? (100*grandDone/grandTotal) : 0}%"></i></span>
+  `;
+  statsEl.appendChild(overall);
+
+  DATA.forEach(group => {
+    const total = group.services.length;
+    const done = group.services.filter(s => s.done || state[rowId(group.key, s.name)]).length;
+    const stat = document.createElement('div');
+    stat.className = 'stat';
+    stat.innerHTML = `
+      <span class="label">${group.label}</span>
+      <span class="value">${done} / ${total}</span>
+      <span class="bar"><i style="width:${total ? (100*done/total) : 0}%"></i></span>
+    `;
+    statsEl.appendChild(stat);
+  });
+}
+
+render();
+</script>

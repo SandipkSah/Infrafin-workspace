@@ -103,7 +103,7 @@ SKIP_EXTENSIONS = {
     '.db', '.sqlite', '.sqlite3',
 }
 SKIP_NAMES = {'htpasswd', 'users.acl', '.gitignore', '.gitattributes'}
-SKIP_SUFFIXES = ('.sanitized', '.additions', '.orig', '.bak')
+SKIP_SUFFIXES = ('.sanitized', '.additions', '.orig', '.bak', '.pre-versioning-backup')
 
 
 def is_env_like(filename):
@@ -213,6 +213,25 @@ def _mask_dollar_expressions(line):
     return _DOLLAR_EXPR_RE.sub(lambda m: ' ' * len(m.group(0)), line)
 
 
+# Known-safe whole words that happen to contain a tracked keyword as a
+# substring with no separator -- our keyword regexes have no word-boundary
+# check before the keyword (needed to still match compound names like
+# SMTP_PASSWORD, DB_KEY_BASE), so "htpasswd" (contains "passwd") in a Docker
+# volume bind-mount line (`- ./htpasswd:/etc/nginx/htpasswd`) got misread as
+# a "key: value" assignment, corrupting the mount's TARGET PATH into
+# "REDACTED" -- not just unnecessary over-redaction, but an actual functional
+# break (nginx's basic-auth file fails to mount), caught by comparing
+# `docker compose up -d --dry-run` against the untouched original on a real
+# proxy service. Masked out (whole-word only, via \b) before any keyword
+# regex runs, same technique as _mask_dollar_expressions. Extend this list if
+# another common non-secret term collides the same way.
+_KNOWN_SAFE_TERMS_RE = re.compile(r'(?i)\bhtpasswd\b')
+
+
+def _mask_known_safe_terms(line):
+    return _KNOWN_SAFE_TERMS_RE.sub(lambda m: ' ' * len(m.group(0)), line)
+
+
 def _is_placeholder(val):
     """
     True for a value that's already safe and should never be (re-)flagged:
@@ -237,7 +256,7 @@ def keyword_matches_in_line(line):
     dollar-expression-masked copy of the line (see _mask_dollar_expressions)
     so a keyword appearing inside a ${VAR:-default}-style reference can never
     be mistaken for a "key: value" assignment in the first place."""
-    masked = _mask_dollar_expressions(line)
+    masked = _mask_known_safe_terms(_mask_dollar_expressions(line))
     found = set()
     for m in _ASSIGNMENT_RE.finditer(masked):
         val = m.group(2)
@@ -626,6 +645,42 @@ def extract_compose_environment(lines, existing_env_keys, existing_example_keys)
     skipped_multiline = []  # keys left inline because their value is a YAML block scalar
     skipped_line_ranges = []  # (start, end) 1-based lines in new_lines, per skipped block
 
+    # Docker Compose's ${VAR} substitution is FILE-WIDE, not per-service --
+    # if the SAME key name (e.g. VIRTUAL_HOST) appears in two different
+    # services' environment: blocks with two DIFFERENT real values, both
+    # would naively get replaced with the same "${VIRTUAL_HOST}", and .env
+    # only has room for one value per name -- whichever value ends up last
+    # in .env.additions silently becomes the value BOTH services receive.
+    # Found via a real minio compose file (minio-s3-1 and minio-nginx each
+    # define their own VIRTUAL_HOST/VIRTUAL_PORT): docker compose up -d
+    # --dry-run against the converted file predicted a real change the
+    # untouched original didn't, and the fully-rendered config showed the
+    # two services' values had been swapped. seen_first_value tracks the
+    # first value extracted for each real key name; when a later occurrence
+    # of that same key has a genuinely different value, a disambiguated
+    # SOURCE name (e.g. VIRTUAL_HOST_2) is used instead -- but only for
+    # which .env entry to read from, never for the environment variable
+    # name itself (the left side must stay e.g. "VIRTUAL_HOST" unchanged,
+    # since that's the literal name nginx-proxy/docker-gen and the
+    # container's own application look for).
+    seen_first_value = {}
+    used_source_names = set()
+
+    def resolve_source_var(key, val_stripped):
+        if key in seen_first_value and seen_first_value[key] != val_stripped:
+            n = 2
+            candidate = f'{key}_{n}'
+            while candidate in used_source_names or candidate in existing_env_keys:
+                n += 1
+                candidate = f'{key}_{n}'
+            source_var = candidate
+        else:
+            source_var = key
+            seen_first_value.setdefault(key, val_stripped)
+        is_new = source_var not in used_source_names
+        used_source_names.add(source_var)
+        return source_var, is_new
+
     in_env_block = False
     env_block_indent = None
     i, n = 0, len(lines)
@@ -644,6 +699,27 @@ def extract_compose_environment(lines, existing_env_keys, existing_example_keys)
 
         stripped = rstripped.strip()
         if stripped == '':
+            new_lines.append(line)
+            i += 1
+            continue
+
+        # A comment line often has no leading whitespace of its own even
+        # though it represents a commented-out sibling of the surrounding
+        # block (e.g. "#      S3_BUCKET: ..." typed flush against column 0
+        # instead of matching the block's actual indentation) -- computed
+        # naively via lstrip(' '), that reads as indent 0, at or below
+        # env_block_indent, which looked like "the environment: block just
+        # ended" and silently stopped extraction for every real line after
+        # it. Found via aws-s3-upload's compose file: everything after such
+        # a comment (S3_BUCKET, DESTINATION_PATH, and -- worse -- the real
+        # AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY entries) fell out of
+        # ${VAR} extraction, with the AWS creds only catching a REDACTED
+        # fallback and the non-secret-looking vars left with their real
+        # value untouched in the .sanitized twin. Same exemption blank
+        # lines already get, and for the same reason: a line with no
+        # reliable indentation of its own can't be used to decide whether
+        # the block has ended.
+        if stripped.startswith('#'):
             new_lines.append(line)
             i += 1
             continue
@@ -670,10 +746,12 @@ def extract_compose_environment(lines, existing_env_keys, existing_example_keys)
                 conflicts.append((key, i + 1))
                 new_lines.append(line)
             else:
-                new_lines.append(f'{indent}- {key}=${{{key}}}{comment_suffix}\n')
-                env_appends.append((key, val_stripped))
-                if key not in existing_example_keys:
-                    example_appends.append(key)
+                source_var, is_new = resolve_source_var(key, val_stripped)
+                new_lines.append(f'{indent}- {key}=${{{source_var}}}{comment_suffix}\n')
+                if is_new:
+                    env_appends.append((source_var, val_stripped))
+                    if source_var not in existing_example_keys:
+                        example_appends.append(source_var)
             handled = True
 
         elif mm:
@@ -711,10 +789,12 @@ def extract_compose_environment(lines, existing_env_keys, existing_example_keys)
                 conflicts.append((key, i + 1))
                 new_lines.append(line)
             else:
-                new_lines.append(f'{indent}{key}: "${{{key}}}"{comment_suffix}\n')
-                env_appends.append((key, val_stripped))
-                if key not in existing_example_keys:
-                    example_appends.append(key)
+                source_var, is_new = resolve_source_var(key, val_stripped)
+                new_lines.append(f'{indent}{key}: "${{{source_var}}}"{comment_suffix}\n')
+                if is_new:
+                    env_appends.append((source_var, val_stripped))
+                    if source_var not in existing_example_keys:
+                        example_appends.append(source_var)
             handled = True
 
         if not handled:
@@ -774,6 +854,119 @@ def classify_env_values(env_appends):
     return name_flagged | scanner_flagged
 
 
+# Single-line Ruby-hash-style assignment shapes found inside GITLAB_OMNIBUS_CONFIG
+# -style block scalars: `key['name'] = 'value'` / `key['name'] => 'value'`
+# (bracketed hash key) and `'name' => 'value'` / `'name' = 'value'` (bare
+# quoted key, e.g. nested one level deeper, like the LDAP server hash). Same
+# value character class as _ASSIGNMENT_RE/_QUOTED_KEY_ASSIGNMENT_RE elsewhere
+# in this file (excludes quotes/angle-brackets/whitespace) -- a value with an
+# embedded space (rare in this style) just won't match here and falls through
+# to the existing REDACTED-based fallback in sanitize_lines instead.
+_BLOCK_ASSIGNMENT_PATTERNS = [
+    re.compile(
+        r"^(?P<prefix>\s*[A-Za-z_][A-Za-z0-9_]*\[['\"](?P<key>[A-Za-z_][A-Za-z0-9_]*)['\"]\]"
+        r"\s*(?:=>|=)\s*)(?P<quote>[\"'])(?P<value>[^\"'<>\s]+)(?P=quote)(?P<suffix>.*)$"
+    ),
+    re.compile(
+        r"^(?P<prefix>\s*[\"'](?P<key>[A-Za-z_][A-Za-z0-9_]*)[\"']"
+        r"\s*(?:=>|=)\s*)(?P<quote>[\"'])(?P<value>[^\"'<>\s]+)(?P=quote)(?P<suffix>.*)$"
+    ),
+]
+
+
+def _derive_block_var_name(key, used_names):
+    """Ruby key -> ENV_VAR_NAME, disambiguated against names already used
+    elsewhere in this file's .env (outer environment: extraction, or an
+    earlier field in this same block)."""
+    base = re.sub(r'[^A-Za-z0-9]+', '_', key).strip('_').upper() or 'SECRET'
+    name = base
+    n = 2
+    while name in used_names:
+        name = f'{base}_{n}'
+        n += 1
+    return name
+
+
+def extract_block_scalar_secrets(path_for_scanning, block_lines, used_names):
+    """
+    Parses an already-isolated block scalar's content (see
+    process_compose_file's block handling -- this must only ever be called on
+    a block's content scanned standalone, never together with surrounding
+    YAML, for the same misattribution reasons documented there) for
+    single-line Ruby-hash-style secret assignments, and moves each
+    SECRET-classified one out to a ${VAR} reference -- the same structural
+    extraction extract_compose_environment already does for plain
+    `environment:` entries, rather than sanitize_lines' REDACTED-text
+    fallback. This produces an immediately deployable, git-trackable result
+    (a clean ${VAR} reference plus the real value moved to .env.additions)
+    instead of a value that's merely safe to commit but no longer usable to
+    actually run the service.
+
+    Classification is the union of (a) this line being flagged by gitleaks,
+    trufflehog, or detect-secrets (value-based) and (b) the key name matching
+    the same PASSWORD/SECRET/TOKEN/... heuristic used everywhere else in this
+    tool -- NOT key-name alone, since a field like `db_key_base` carries no
+    tracked keyword but is exactly as sensitive as `secret_key_base` sitting
+    right next to it. detect-secrets matters here specifically: gitleaks and
+    trufflehog did NOT reliably flag `db_key_base`/`otp_key_base`'s lines in
+    testing (only `secret_key_base` matched, via its "SECRET" keyword
+    substring) even though all three are equally sensitive GitLab fields --
+    this is the exact class of gap that made detect-secrets a 4th signal
+    everywhere else in this tool (its KeywordDetector catches Ruby-hash
+    `key['name'] = 'value'` assignments the other two can miss), so it needs
+    to be here too, not just in sanitize_lines' fallback path.
+
+    Returns (new_block_lines, env_appends) -- env_appends is a list of
+    (VAR_NAME, real_value) tuples, same shape as extract_compose_environment's,
+    for the caller to fold into the same .env.additions/.env.example.additions
+    output. Already-externalized (${VAR}/$VAR) and already-REDACTED values are
+    left untouched (see _is_placeholder), and used_names (passed in, mutated)
+    prevents a derived name from colliding with one already in use.
+    """
+    gl = gitleaks_matches_by_line(path_for_scanning) or {}
+    th = trufflehog_matches_by_line(path_for_scanning) or {}
+    ds = detect_secrets_flagged_lines(path_for_scanning) or set()
+
+    new_lines = []
+    env_appends = []
+
+    for idx, line in enumerate(block_lines, start=1):
+        matched = None
+        for pat in _BLOCK_ASSIGNMENT_PATTERNS:
+            m = pat.match(line.rstrip('\n'))
+            if m:
+                matched = m
+                break
+
+        if matched is None:
+            new_lines.append(line)
+            continue
+
+        key = matched.group('key')
+        value = matched.group('value')
+
+        if not value or _is_placeholder(value):
+            new_lines.append(line)
+            continue
+
+        is_secret = is_secret_key_fallback(key) or idx in gl or idx in th or idx in ds
+        if not is_secret:
+            new_lines.append(line)
+            continue
+
+        var_name = _derive_block_var_name(key, used_names)
+        used_names.add(var_name)
+        env_appends.append((var_name, value))
+
+        newline = '\n' if line.endswith('\n') else ''
+        new_lines.append(
+            f"{matched.group('prefix')}{matched.group('quote')}${{{var_name}}}"
+            f"{matched.group('quote')}{matched.group('suffix')}{newline}"
+        )
+
+    return new_lines, env_appends
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -820,6 +1013,7 @@ def process_compose_file(compose_path, out_subdir, do_write):
               "other file in this service is unaffected by this.)")
         result_lines = lines
         env_appends, example_appends, conflicts, skipped_multiline, skipped_line_ranges = [], [], [], [], []
+        existing_env_keys = existing_example_keys = None
     else:
         result_lines, env_appends, example_appends, conflicts, skipped_multiline, skipped_line_ranges = \
             extract_compose_environment(lines, existing_env_keys, existing_example_keys)
@@ -837,24 +1031,6 @@ def process_compose_file(compose_path, out_subdir, do_write):
             print("  SKIPPED -- multi-line YAML block scalar, left inline, review/extract by hand if wanted:")
             for k in skipped_multiline:
                 print(f"    - {k}")
-
-        if do_write and env_appends:
-            additions_path = os.path.join(out_subdir, '.env.additions')
-            with open(additions_path, 'w') as f:
-                for k, v in env_appends:
-                    f.write(f"{k}={v}\n")
-            print(f"  wrote: {additions_path}  ({len(env_appends)} lines, real values -- do not paste this file anywhere)")
-
-            env_appends_by_key = dict(env_appends)
-            example_additions_path = os.path.join(out_subdir, '.env.example.additions')
-            with open(example_additions_path, 'w') as f:
-                for k in example_appends:
-                    if k in secret_keys:
-                        f.write(f"{k}=\n")
-                    else:
-                        f.write(f"{k}={env_appends_by_key[k]}\n")
-            print(f"  wrote: {example_additions_path}  ({len(example_appends)} lines, "
-                  f"flagged secrets blanked / config vars kept as real values)")
 
     # Generic pass over the (possibly ${VAR}-substituted) result, to catch
     # anything outside `environment:` (command:, labels:, ...). Scan a temp
@@ -875,6 +1051,19 @@ def process_compose_file(compose_path, out_subdir, do_write):
         # with no enclosing "KEY: |" line for anything to misattribute to,
         # findings land on the right line and can be redacted safely. The key
         # line itself is never touched either way.
+        #
+        # Before the REDACTED-based fallback runs, try extracting each
+        # SECRET-classified single-line Ruby-hash assignment (`key['name'] =
+        # 'value'`) out to a ${VAR} reference instead -- same structural
+        # extraction the outer environment: block already gets, just reached
+        # via a different YAML shape. Whatever this doesn't structurally
+        # match (multi-line arrays, values with embedded spaces) still falls
+        # through to the REDACTED fallback below, unchanged.
+        block_env_appends = []
+        used_names = set()
+        if existing_env_keys is not None:
+            used_names = set(existing_env_keys) | set(existing_example_keys) | {k for k, _ in env_appends}
+
         unresolved_blocks = []
         for key, (start, end) in zip(skipped_multiline, skipped_line_ranges):
             content_start = start + 1  # 1-based; skip the "KEY: |" line itself
@@ -884,11 +1073,49 @@ def process_compose_file(compose_path, out_subdir, do_write):
             block_copy = os.path.join(tmpdir, f'block_{start}_{end}.txt')
             with open(block_copy, 'w') as f:
                 f.writelines(block_lines)
+
+            this_block_appends = []
+            if existing_env_keys is not None:
+                extracted_lines, this_block_appends = extract_block_scalar_secrets(
+                    block_copy, block_lines, used_names)
+                if this_block_appends:
+                    block_lines = extracted_lines
+                    block_env_appends.extend(this_block_appends)
+                    with open(block_copy, 'w') as f:
+                        f.writelines(block_lines)
+                    print(f"  vars extracted from block scalar '{key}': {len(this_block_appends)}")
+                    for k, _ in this_block_appends:
+                        print(f"    - {k}  (secret -> blanked in .env.example)")
+
             redacted_block, block_count = sanitize_lines(block_copy, block_lines)
             final_lines[content_start - 1:end] = redacted_block
             redaction_count += block_count
-            if block_count == 0:
+            if block_count == 0 and not this_block_appends:
                 unresolved_blocks.append(key)
+
+    if block_env_appends:
+        outer_secret_keys = classify_env_values(env_appends)
+        env_appends = env_appends + block_env_appends
+        example_appends = example_appends + [k for k, _ in block_env_appends]
+        secret_keys = outer_secret_keys | {k for k, _ in block_env_appends}
+
+    if do_write and env_appends:
+        additions_path = os.path.join(out_subdir, '.env.additions')
+        with open(additions_path, 'w') as f:
+            for k, v in env_appends:
+                f.write(f"{k}={v}\n")
+        print(f"  wrote: {additions_path}  ({len(env_appends)} lines, real values -- do not paste this file anywhere)")
+
+        env_appends_by_key = dict(env_appends)
+        example_additions_path = os.path.join(out_subdir, '.env.example.additions')
+        with open(example_additions_path, 'w') as f:
+            for k in example_appends:
+                if k in secret_keys:
+                    f.write(f"{k}=\n")
+                else:
+                    f.write(f"{k}={env_appends_by_key[k]}\n")
+        print(f"  wrote: {example_additions_path}  ({len(example_appends)} lines, "
+              f"flagged secrets blanked / config vars kept as real values)")
 
     filename = os.path.basename(compose_path)
     needs_sanitized = bool(env_appends) or redaction_count > 0
@@ -900,8 +1127,8 @@ def process_compose_file(compose_path, out_subdir, do_write):
         # precedent (its SPILO_CONFIGURATION was read and confirmed clean by
         # hand, not just waved through because nothing matched automatically).
         print(f"  NOTE: {', '.join(unresolved_blocks)} (block scalar) had nothing automatically "
-              f"redacted in it -- that's not the same as confirmed clean. Review it by hand "
-              f"before trusting {'the .sanitized copy' if needs_sanitized else 'this file'}.")
+              f"redacted OR extracted in it -- that's not the same as confirmed clean. Review it "
+              f"by hand before trusting {'the .sanitized copy' if needs_sanitized else 'this file'}.")
         needs_sanitized = True
 
     if not needs_sanitized:

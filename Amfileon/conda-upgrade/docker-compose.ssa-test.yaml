@@ -13,11 +13,9 @@
 # --no-deps        leaves redis and every other conda-* container alone
 # --force-recreate recreates only conda-ssa, onto the `image:` below
 #
-# For the ssa-test-max variant, change the tag to amfileon/conda:ssa-test-max.
-#
 # Rollback (any time): delete this file and re-run the same command minus
 # `-f docker-compose.ssa-test.yaml` -- conda-ssa goes back to `amfileon/conda`.
 
 services:
   ssa:
-    image: amfileon/conda:ssa-test
+    image: amfileon/conda:ssa-test-v2

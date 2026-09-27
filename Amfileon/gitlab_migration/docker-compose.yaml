@@ -1,0 +1,133 @@
+services:
+  gitlab:
+#    image: gitlab/gitlab-ee
+#    image: gitlab/gitlab-ee:16.6.7-ee.0
+#    image: gitlab/gitlab-ee:16.7.10-ee.0
+#    image: gitlab/gitlab-ee:16.11.10-ee.0
+#    image: gitlab/gitlab-ee:17.3.4-ee.0
+#    image: gitlab/gitlab-ee:17.4.1-ee.0
+#    image: gitlab/gitlab-ee:17.5.1-ee.0
+#    image: gitlab/gitlab-ee:17.5.5-ee.0
+#    image: gitlab/gitlab-ee:17.8.7-ee.0
+#    image: gitlab/gitlab-ee:17.11.4-ee.0
+#    image: gitlab/gitlab-ee:17.11.6-ee.0
+#    image: gitlab/gitlab-ee:17.11.7-ee.0
+#    image: gitlab/gitlab-ee:18.2.5-ee.0
+#    image: gitlab/gitlab-ee:18.3.1-ee.0
+#    image: gitlab/gitlab-ee:latest
+#    image: gitlab/gitlab-ee:18.7.1-ee.0
+#    image: gitlab/gitlab-ce:18.7.1-ce.0
+    image: gitlab/gitlab-ce:latest
+    container_name: gitlab-ce2
+    restart: always
+    hostname: 'gitlab2.amf'
+    environment:
+      VIRTUAL_HOST: gitlab2.amf,registry2.amf
+      VIRTUAL_PORT: 80
+      GITLAB_OMNIBUS_CONFIG: |
+        # Add any other gitlab.rb configuration here, each on its own line
+        # General
+        gitlab_rails['time_zone'] = 'Europe/Berlin'
+        gitlab_rails['gitlab_shell_ssh_port'] = 10023
+        # gitlab_rails['monitoring_whitelist'] = ['127.0.0.0/8', '10.10.10.20/24']
+        # Gitlab nginx
+        external_url 'https://gitlab2.amf'
+        nginx['listen_port'] = 80
+        nginx['listen_https'] = false
+        nginx['proxy_set_headers'] = {
+            "X-Forwarded-Proto" => "https",
+            "X-Forwarded-Ssl" => "on"
+        }
+        # Registry nginx
+        gitlab_rails['registry_enabled'] = true
+        # registry_external_url 'https://registry2.amf'
+        registry_external_url 'http://localhost:5005'
+        #registry_nginx['listen_port'] = 80
+        registry_nginx['listen_port'] = 5005
+        registry_nginx['listen_https'] = false
+        #registry['database'] = { 'enabled' => true } 
+        registry['database'] = {
+          'enabled' => true,
+        }
+        registry['storage'] = {
+          'filesystem'  => { 'rootdirectory' => '/var/opt/gitlab/gitlab-rails/shared/registry' },
+          'maintenance' => { 'readonly' => { 'enabled' => false } }
+        }
+        # SMTP
+        gitlab_rails['smtp_enable'] = true
+        gitlab_rails['smtp_address'] = "smtp.office365.com"
+        gitlab_rails['smtp_port'] = 587
+        gitlab_rails['smtp_user_name'] = "system@amfileon.com"
+        gitlab_rails['smtp_password'] = "${SMTP_PASSWORD:-}"
+        gitlab_rails['smtp_domain'] = "amfileon.com"
+        gitlab_rails['smtp_authentication'] = "login"
+        gitlab_rails['smtp_enable_starttls_auto'] = true
+        gitlab_rails['smtp_openssl_verify_mode'] = 'peer'
+        gitlab_rails['gitlab_email_from'] = "system@amfileon.com"
+        # Secrets
+        gitlab_rails['db_key_base'] = "${DB_BASE_KEY:-}"
+        gitlab_rails['secret_key_base'] = "${SECRET_KEY_BASE:-}"
+        gitlab_rails['otp_key_base'] = "${OTP_BASE_KEY}"
+        # LDAP
+        gitlab_rails['ldap_enabled'] = true
+        gitlab_rails['ldap_servers'] = {
+          'main' => {
+            'label' => 'LDAP',
+            'host' =>  'ldap.amf',
+            'port' => 636,
+            'uid' => 'cn',
+            'bind_dn' => 'cn=auth,dc=amf',
+            'password' => "${LDAP_SERVER_PASSWORD}",
+            'encryption' => 'simple_tls',
+            'verify_certificates' => false,
+            'timeout' => 10,
+            'active_directory' => false,
+            'user_filter' => '(&(objectclass=*)(memberOf=cn=git,ou=groups,dc=amf))',
+            'base' => 'ou=users,dc=amf',
+            'lowercase_usernames' => 'false',
+            'retry_empty_result_with_codes' => [80],
+            'allow_username_or_email_login' => false,
+            'block_auto_created_users' => false
+          }
+        }
+    ports:
+      - '80'
+#      - '443'
+      - '10023:22'
+      - '127.0.0.1:5005:5005'
+    volumes:
+      - 'gitlab_config:/etc/gitlab'
+#      - 'gitlab_logs:/var/log/gitlab'
+      - 'gitlab_data:/var/opt/gitlab'
+    cpus: 12
+    shm_size: '256m'
+    mem_limit: '64g'
+    memswap_limit: '64g'
+    networks:
+      - proxy
+#    healthcheck:
+#      test: ["CMD", "/usr/local/sbin/healthcheck"]
+#      interval: 5m
+#      timeout: 10s
+#      retries: 3
+#      start_period: 5m
+#    healthcheck:
+#      test: ["CMD-SHELL", "gitlab-rake gitlab:check SANITIZE=true | grep -q 'Checking GitLab ... Finished' && curl -k https://hc.amf/ping/bd694b53-3dd9-4b05-91c6-697d7aeb6845 || exit 1"]
+#      test: ["CMD-SHELL", "out=$(gitlab-ctl status 2>/dev/null); echo \"$out\" | grep -Eq '^run: nginx:' && echo \"$out\" | grep -Eq '^run: gitlab-workhorse:' && echo \"$out\" | grep -Eq '^run: puma:' && echo \"$out\" | grep -Eq '^run: sidekiq:' && curl -fsS -m 10 -o /dev/null -k https://hc.amf/ping/bd694b53-3dd9-4b05-91c6-697d7aeb6845 || exit 1"]
+      #test: bash -c "curl -f http://localhost:80/-/health && curl -k https://hc.amf/ping/bd694b53-3dd9-4b05-91c6-697d7aeb6845"
+#      test: bash -c "pidof nginx && curl -k https://hc.amf/ping/bd694b53-3dd9-4b05-91c6-697d7aeb6845"
+#      interval: 1m
+#      timeout: 10s
+#      retries: 5
+#      start_period: 2m
+
+
+volumes:
+  gitlab_config:
+#  gitlab_logs:
+  gitlab_data:
+
+networks:
+  proxy:
+    name: proxy_network
+    external: true

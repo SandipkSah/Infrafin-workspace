@@ -1,0 +1,277 @@
+services:
+  redis:
+    restart: always
+    image: redis:6.2.6
+    container_name: gitlab-redis
+    command:
+    - --loglevel warning
+    volumes:
+    - redis-data:/data:Z
+
+  postgresql:
+    restart: always
+    image: sameersbn/postgresql:14-20230628
+    container_name: gitlab-postgresql
+    volumes:
+    - postgresql-data:/var/lib/postgresql:Z
+    environment:
+    - DB_USER=gitlab
+    - DB_PASS=********************************************
+    - DB_NAME=gitlabhq_production
+    - DB_EXTENSION=pg_trgm,btree_gist
+
+  gitlab:
+    restart: always
+    image: sameersbn/gitlab:18.11.11
+#    image: sameersbn/gitlab:18.11.5
+#    image: sameersbn/gitlab:latest
+    container_name: gitlab
+    depends_on:
+    - redis
+    - postgresql
+    ports:
+    - "10080:80"
+    - "10022:22"
+    volumes:
+    - gitlab-data:/home/git/data:Z
+    - certs-data:/certs
+    - ./sockets:/var/opt/gitlab/gitlab-kas/sockets/
+    networks:
+    - default
+    - ldap
+#    healthcheck:
+#      test: ["CMD", "/usr/local/sbin/healthcheck"]
+#      interval: 5m
+#      timeout: 10s
+#      retries: 3
+#      start_period: 5m
+    healthcheck:
+      test: pidof nginx && curl http://localhost/-/health && curl -fsS -m 10 --retry 5 -o /dev/null https://hc.nexdos.de/ping/********************************************
+      interval: 1m
+      timeout: 5s
+      retries: 1
+      start_period: 120s
+    environment:
+    - VIRTUAL_HOST=git.nexdos.de
+    - VIRTUAL_PORT=80
+    - LETSENCRYPT_HOST=git.nexdos.de
+    - NGINX_X_FORWARDED_PROTO=https
+    - <
+      GITLAB_OMNIBUS_CONFIG=
+          gitlab_kas['enable'] = true
+          gitlab_kas['internal_api_listen_network'] = 'unix'
+          gitlab_kas['internal_api_listen_address'] = '/var/opt/gitlab/gitlab-kas/sockets/internal-api.socket'
+          gitlab_kas['private_api_listen_network'] = 'unix'
+          gitlab_kas['private_api_listen_address'] = '/var/opt/gitlab/gitlab-kas/sockets/private-api.socket'
+          gitlab_kas['env'] = {
+              'SSL_CERT_DIR' => "/opt/gitlab/embedded/ssl/certs/",
+              'OWN_PRIVATE_API_URL' => 'unix:///var/opt/gitlab/gitlab-kas/sockets/private-api.socket'
+          }
+          gitlab_rails['gitlab_kas_external_url'] = 'ws://git.nexdos.de/-/kubernetes-agent/'
+          gitlab_kas_external_url "ws://git.nexdos.de/-/kubernetes-agent/"
+#          gitlab_rails['gitlab_kas_external_url'] = 'wss://gitlab.example.com/-/kubernetes-agent/'
+#          gitlab_rails['gitlab_kas_internal_url'] = 'grpc://kas.internal.gitlab.example.com'
+#          gitlab_rails['gitlab_kas_external_k8s_proxy_url'] = 'https://gitlab.example.com/-/kubernetes-agent/k8s-proxy/'
+    # - GITLAB_OMNIBUS_CONFIG=|
+#          external_url 'https://git.nexdos.de';
+#          nginx['listen_port'] = 80;
+    #      nginx['listen_https'] = false
+    #      nginx['proxy_set_headers'] = {
+    #        "X-Forwarded-Proto" => "https",
+    #        "X-Forwarded-Ssl" => "on"
+    #      }
+    - DEBUG=false
+
+    - DB_ADAPTER=postgresql
+    - DB_HOST=postgresql
+    - DB_PORT=5432
+    - DB_USER=gitlab
+    - DB_PASS=********************************************
+    - DB_NAME=gitlabhq_production
+
+    - REDIS_HOST=redis
+    - REDIS_PORT=6379
+
+    - TZ=Europe/Berlin
+    - GITLAB_TIMEZONE=Berlin
+
+    - GITLAB_HTTPS=true
+    - SSL_SELF_SIGNED=true
+
+    - GITLAB_HOST=git.nexdos.de
+    - GITLAB_PORT=443
+    - GITLAB_SSH_PORT=10022
+    - GITLAB_RELATIVE_URL_ROOT=
+    - GITLAB_SECRETS_DB_KEY_BASE=********************************************
+    - GITLAB_SECRETS_SECRET_KEY_BASE=********************************************
+    - GITLAB_SECRETS_OTP_KEY_BASE=********************************************
+
+    - GITLAB_ROOT_PASSWORD=********************************************
+    - GITLAB_ROOT_EMAIL=********************************************
+
+    - GITLAB_NOTIFY_ON_BROKEN_BUILDS=true
+    - GITLAB_NOTIFY_PUSHER=false
+
+    - GITLAB_EMAIL=********************************************
+    - GITLAB_EMAIL_REPLY_TO=********************************************
+    - GITLAB_INCOMING_EMAIL_ADDRESS=********************************************
+
+    - GITLAB_BACKUP_SCHEDULE=daily
+    - GITLAB_BACKUP_TIME=01:00
+
+    - SMTP_ENABLED=true
+    - SMTP_DOMAIN=nexdos.de
+    - SMTP_HOST=mail.your-server.de
+    - SMTP_PORT=587
+    - SMTP_USER=********************************************
+    - SMTP_PASS=********************************************
+    - SMTP_STARTTLS=true
+    - SMTP_AUTHENTICATION=login
+
+    - IMAP_ENABLED=false
+    - IMAP_HOST=imap.gmail.com
+    - IMAP_PORT=993
+    - IMAP_USER=mailer@example.com
+    - IMAP_PASS=password
+    - IMAP_SSL=true
+    - IMAP_STARTTLS=false
+
+    - OAUTH_ENABLED=false
+    - OAUTH_AUTO_SIGN_IN_WITH_PROVIDER=
+    - OAUTH_ALLOW_SSO=
+    - OAUTH_BLOCK_AUTO_CREATED_USERS=true
+    - OAUTH_AUTO_LINK_LDAP_USER=false
+    - OAUTH_AUTO_LINK_SAML_USER=false
+    - OAUTH_EXTERNAL_PROVIDERS=
+
+    - OAUTH_CAS3_LABEL=cas3
+    - OAUTH_CAS3_SERVER=
+    - OAUTH_CAS3_DISABLE_SSL_VERIFICATION=false
+    - OAUTH_CAS3_LOGIN_URL=/cas/login
+    - OAUTH_CAS3_VALIDATE_URL=/cas/p3/serviceValidate
+    - OAUTH_CAS3_LOGOUT_URL=/cas/logout
+
+    - OAUTH_GOOGLE_API_KEY=
+    - OAUTH_GOOGLE_APP_SECRET=
+    - OAUTH_GOOGLE_RESTRICT_DOMAIN=
+
+    - OAUTH_FACEBOOK_API_KEY=
+    - OAUTH_FACEBOOK_APP_SECRET=
+
+    - OAUTH_TWITTER_API_KEY=
+    - OAUTH_TWITTER_APP_SECRET=
+
+    - OAUTH_GITHUB_API_KEY=
+    - OAUTH_GITHUB_APP_SECRET=
+    - OAUTH_GITHUB_URL=
+    - OAUTH_GITHUB_VERIFY_SSL=
+
+    - OAUTH_GITLAB_API_KEY=
+    - OAUTH_GITLAB_APP_SECRET=
+
+    - OAUTH_BITBUCKET_API_KEY=
+    - OAUTH_BITBUCKET_APP_SECRET=
+    - OAUTH_BITBUCKET_URL=
+
+    - OAUTH_SAML_ASSERTION_CONSUMER_SERVICE_URL=
+    - OAUTH_SAML_IDP_CERT_FINGERPRINT=
+    - OAUTH_SAML_IDP_SSO_TARGET_URL=
+    - OAUTH_SAML_ISSUER=
+    - OAUTH_SAML_LABEL="Our SAML Provider"
+    - OAUTH_SAML_NAME_IDENTIFIER_FORMAT=urn:oasis:names:tc:SAML:2.0:nameid-format:transient
+    - OAUTH_SAML_GROUPS_ATTRIBUTE=
+    - OAUTH_SAML_EXTERNAL_GROUPS=
+    - OAUTH_SAML_ATTRIBUTE_STATEMENTS_EMAIL=
+    - OAUTH_SAML_ATTRIBUTE_STATEMENTS_NAME=
+    - OAUTH_SAML_ATTRIBUTE_STATEMENTS_USERNAME=
+    - OAUTH_SAML_ATTRIBUTE_STATEMENTS_FIRST_NAME=
+    - OAUTH_SAML_ATTRIBUTE_STATEMENTS_LAST_NAME=
+
+    - OAUTH_CROWD_SERVER_URL=
+    - OAUTH_CROWD_APP_NAME=
+    - OAUTH_CROWD_APP_PASSWORD=
+
+    - OAUTH_AUTH0_CLIENT_ID=
+    - OAUTH_AUTH0_CLIENT_SECRET=
+    - OAUTH_AUTH0_DOMAIN=
+    - OAUTH_AUTH0_SCOPE=
+
+    - OAUTH_AZURE_API_KEY=
+    - OAUTH_AZURE_API_SECRET=
+    - OAUTH_AZURE_TENANT_ID=
+
+    # LDAP
+    - LDAP_ENABLED=true
+    - LDAP_PREVENT_LDAP_SIGN_IN=false
+    - LDAP_LABEL=LDAP
+    - LDAP_HOST=ldap.nexdos.de
+    - LDAP_PORT=636
+    - LDAP_UID=cn
+    - LDAP_METHOD=simple_tls
+    - LDAP_VERIFY_SSL=false
+    - LDAP_BIND_DN=cn=auth,dc=nexdos,dc=de
+    - LDAP_PASS=********************************************
+    # - LDAP_TIMEOUT=10
+    - LDAP_ACTIVE_DIRECTORY=false
+    - LDAP_ALLOW_USERNAME_OR_EMAIL_LOGIN=false
+    - LDAP_USER_ATTRIBUTE_USERNAME=uid
+    - LDAP_USER_ATTRIBUTE_MAIL=mail
+    # - LDAP_BLOCK_AUTO_CREATED_USERS=false
+    - LDAP_BASE=ou=users,dc=nexdos,dc=de
+    - LDAP_USER_FILTER=(&(objectclass=*)(memberOf=cn=gitlab,ou=groups,dc=nexdos,dc=de))
+    # - LDAP_USER_FILTER=(&(objectclass=*)(|(uid=%s)(cn=%s))(memberOf=cn=grafana,ou=groups,dc=nexdos,dc=de))
+
+    # Docker registry
+    - GITLAB_REGISTRY_ENABLED=true
+    - GITLAB_REGISTRY_HOST=registry.nexdos.de
+    - GITLAB_REGISTRY_PORT=443
+    - GITLAB_REGISTRY_API_URL=http://registry:5000
+    - GITLAB_REGISTRY_KEY_PATH=/certs/registry.key
+    - GITLAB_REGISTRY_ISSUER=gitlab-issuer
+    - GITLAB_REGISTRY_GENERATE_INTERNAL_CERTIFICATES=true
+
+#    healthcheck:
+#      test: pidof nginx && curl -fsS -m 10 --retry 5 -o /dev/null https://hc.nexdos.de/ping/fbebf530-0c74-40e9-8850-fadd0bba1fb9
+#      interval: 1m
+#      timeout: 5s
+#      retries: 1
+#      start_period: 120s
+
+  registry:
+#    image: registry:2.8.1
+    image: registry:2
+    container_name: registry
+    depends_on:
+      - gitlab
+    volumes:
+      - registry-data:/registry
+      - certs-data:/certs
+#      - ./registry_config.yaml:/etc/docker/registry/config.yml
+    environment:
+      - VIRTUAL_HOST=registry.nexdos.de
+      - VIRTUAL_PORT=5000
+      - LETSENCRYPT_HOST=registry.nexdos.de
+      - REGISTRY_LOG_LEVEL=error
+      - REGISTRY_STORAGE_FILESYSTEM_ROOTDIRECTORY=/registry
+      - REGISTRY_STORAGE_DELETE_ENABLED=true
+      - REGISTRY_AUTH_TOKEN_REALM=https://git.nexdos.de/jwt/auth
+      - REGISTRY_AUTH_TOKEN_SERVICE=container_registry
+      - REGISTRY_AUTH_TOKEN_ISSUER=gitlab-issuer
+      - REGISTRY_AUTH_TOKEN_ROOTCERTBUNDLE=/certs/registry.crt
+    restart: unless-stopped
+    ports:
+      - "5000"
+
+volumes:
+  redis-data:
+  postgresql-data:
+  gitlab-data:
+  certs-data:
+  registry-data:
+
+networks:
+   default:
+      external: true
+      name: proxy_network
+   ldap:
+      external: true

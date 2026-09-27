@@ -43,6 +43,14 @@
 # ---- secrets: never track ----
 .env
 .env.*
+# .env.example is the deliberate exception: it's the git-trackable companion
+# to .env (secrets blanked, config values kept as real values -- built by
+# build_env_example.py from a service's real .env). ".env.*" above would
+# otherwise silently exclude it too, since it also starts with ".env." --
+# found only once we actually tried to track one for the first time, meaning
+# every .env.example anywhere in this repo had been silently excluded the
+# entire time before this fix.
+!.env.example
 *.env
 *.env_*
 *.key

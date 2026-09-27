@@ -1,0 +1,184 @@
+# syntax=docker/dockerfile:1
+#
+# v2 of Dockerfile.ssa-test-max. Everything below matches the original Dockerfile
+# line-for-line except where marked:
+#   [BASE SWAP]  forced by moving off gpuci/miniconda-cuda -- the old line would error here
+#   [UPGRADE]    an actual version/library upgrade, the point of this file
+# No unrelated reformatting, reordering, or "cleanup" beyond that.
+#
+# [UPGRADE] uv comes from registry.amf/data/base-image:2026.09.1 -- this internal build is
+# compiled without HTTP/2 support, since pypi.amf doesn't handle HTTP/2 reliably (the
+# upstream ghcr.io/astral-sh/uv build uses HTTP/2 and risks breaking against pypi.amf).
+# Getting to this required two host-level fixes:
+#   1. gpu1 didn't trust the Amfileon internal CA (CN=amf, O=Amfileon AG) for
+#      registry.amf/gitlab.amf -- fixed: `sudo cp /srv/docker/proxy/CA.pem
+#      /usr/local/share/ca-certificates/amfileon-CA.crt && sudo update-ca-certificates`.
+#   2. Registry account needed project-level (Reporter+) access to `data/base-image`.
+# Bumped from :2025.11.1 -> :2026.09.1 (newer uv rebuild). Re-verify the UV_NATIVE_TLS /
+# UV_SYSTEM_CERTS workaround below still applies -- it was diagnosed against uv 0.9.10 from
+# the old tag specifically; a newer uv build may behave differently (or not need it at all).
+
+# [UPGRADE] was gpuci/miniconda-cuda:11.4-devel-ubuntu20.04
+# 12.4.x has no ubuntu24.04 tag on Docker Hub -- checked directly; 12.6.3 is the
+# closest available and within the forward-compat range already proven on gpu1's driver.
+FROM nvidia/cuda:12.6.3-cudnn-devel-ubuntu24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+# [BASE SWAP] this base's /bin/sh is dash, doesn't support `source` (used further down for nvm)
+SHELL ["/bin/bash", "-c"]
+
+# [BASE SWAP] both apt-key lines removed: they fetched ubuntu1804/CUDA-11 keys that don't
+# apply to this base at all, and the NVIDIA image already ships its own apt keyring.
+
+RUN apt update && \
+    (command -v unminimize >/dev/null && yes | unminimize || true) && \
+    apt install -y sudo nano acl wget htop bat ncdu cifs-utils vim less tmux make gcc automake xserver-xorg && \
+    apt install -y texlive dvipng texlive-latex-extra texlive-fonts-recommended cm-super screen && \
+    apt install -y libpq-dev iputils-ping wkhtmltopdf graphviz
+# (dropped the original's `apt install -y -o Dpkg::Options::="--force-confold" --force-yes &&`
+# fragment -- it has no packages after it, so it installs nothing; a no-op either way)
+
+# [UPGRADE] Miniforge (conda-forge by default) instead of the old base's inherited conda +
+# Anaconda's `defaults` channel. This is the actual mechanism for "upgrade as many libs as
+# possible" -- the old `anaconda` metapackage is a curated, deliberately-conservative bundle;
+# no version bump of it gets you current packages, only a channel/mechanism change does.
+ENV CONDA_DIR=/opt/conda
+RUN wget -q https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-x86_64.sh -O /tmp/mc.sh && \
+    bash /tmp/mc.sh -b -u -p ${CONDA_DIR} && rm /tmp/mc.sh
+ENV PATH=${CONDA_DIR}/bin:${PATH}
+# `conda init` only wires up /root/.bashrc (root is the only user that exists at build time) --
+# ssa/rba/etc. don't exist until entrypoint.sh creates them, so without this system-wide
+# profile.d file their login shells wouldn't get conda/python on PATH at all.
+RUN echo 'export PATH=/opt/conda/bin:$PATH' > /etc/profile.d/conda.sh && \
+    conda config --system --set auto_activate_base true && conda init --all
+
+# Split into several smaller installs rather than one 30-package unpinned solve: each step
+# resolves against an already-solved environment (much smaller search space, much faster),
+# and if a real conflict exists, it surfaces against a small group instead of hanging on one
+# opaque all-at-once solve (conda_libmamba_solver's own conflict-explainer can crash on those
+# large solves -- "RuntimeError: std::get: wrong index for variant" -- masking the real error).
+RUN conda install -y -c conda-forge --override-channels python=3.12
+RUN conda install -y -c conda-forge --override-channels numpy scipy pandas scikit-learn scikit-learn-intelex
+RUN conda install -y -c conda-forge --override-channels matplotlib seaborn plotly bokeh
+RUN conda install -y -c conda-forge --override-channels jupyterlab ipykernel ipywidgets notebook
+RUN conda install -y -c conda-forge --override-channels statsmodels numba sympy networkx
+RUN conda install -y -c conda-forge --override-channels pyarrow sqlalchemy psycopg2 h5py
+RUN conda install -y -c conda-forge --override-channels dask distributed
+RUN conda install -y -c conda-forge --override-channels requests pyyaml tqdm rich
+RUN conda install -y -c conda-forge --override-channels black isort flake8 pylint mypy pytest
+RUN conda clean -afy
+
+RUN apt update && apt install -y plocate moreutils bat csvkit tldr    # [BASE SWAP] mlocate -> plocate (removed in noble)
+RUN git clone https://github.com/jeroenjanssens/dsutils.git /usr/bin/dsutils
+
+# Docker CLI
+RUN apt update && apt install -y ca-certificates curl gnupg lsb-release
+RUN curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
+RUN echo \
+    "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu \
+    $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+RUN apt update && apt install -y docker-ce-cli
+
+# Do not use the awscli Ubuntu package, it is outdated and missing important features such as
+WORKDIR /root
+RUN curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+RUN unzip awscliv2.zip
+RUN ./aws/install
+RUN ./aws/install --bin-dir /usr/local/bin --install-dir /usr/local/aws-cli --update
+
+RUN apt update && apt install -y openssh-server
+# [UPGRADE] dropped `-o Dpkg::Options::="--force-confold" --force-yes` -- both are moot for a
+# first-time install of a package with no existing config to conflict with, and --force-yes
+# is deprecated apt-wide anyway.
+RUN sed -i "s/#PubkeyAuthentication yes/PubkeyAuthentication yes/" /etc/ssh/sshd_config
+RUN sed -i "s/#PasswordAuthentication yes/PasswordAuthentication no/" /etc/ssh/sshd_config
+RUN echo "HostKey /etc/ssh/keys/ssh_host_rsa_key" >> /etc/ssh/sshd_config
+RUN echo "HostKey /etc/ssh/keys/ssh_host_ecdsa_key" >> /etc/ssh/sshd_config
+RUN echo "HostKey /etc/ssh/keys/ssh_host_ed25519_key" >> /etc/ssh/sshd_config
+
+# Install newest git client version
+RUN apt update && apt install -y software-properties-common nano
+RUN add-apt-repository -y ppa:git-core/ppa
+RUN apt update && apt install -y git
+RUN apt upgrade -y
+
+# Redis
+RUN sudo apt update && sudo apt install -y redis-tools groff
+
+# TF
+RUN pip install --no-cache-dir --upgrade 'tensorflow[and-cuda]'    # [UPGRADE] was `conda install tensorflow` -> 2.20.0; this tracks latest + matching CUDA libs
+
+# UV
+# [UPGRADE] registry.amf/data/base-image:2026.09.1 -- see note at top of file.
+COPY --from=registry.amf/data/base-image:2026.09.1 /bin/uv /bin/uvx /bin/
+# uv ignores the OS trust store by default and can't reach pypi.amf without this. The old
+# :2025.11.1 build (uv 0.9.10) rejected pypi.amf with "invalid peer certificate: UnknownIssuer"
+# under UV_SYSTEM_CERTS alone -- its own error hinted at --native-tls instead, meaning that
+# build predated uv's rename from UV_NATIVE_TLS to UV_SYSTEM_CERTS. Kept both set here for
+# :2026.09.1 too, unverified -- whichever name this newer build recognizes takes effect, the
+# other is a harmless no-op either way. Re-test against pypi.amf before trusting this tag.
+ENV UV_NATIVE_TLS=true
+ENV UV_SYSTEM_CERTS=true
+
+# NPM
+ENV NVM_DIR=/usr/local/.nvm
+ENV NODE_VERSION=20.19.3
+RUN git clone https://github.com/nvm-sh/nvm.git $NVM_DIR \
+    && cd $NVM_DIR \
+    && git checkout v0.40.3 \
+    && source $NVM_DIR/nvm.sh \
+    && nvm install $NODE_VERSION \
+    && nvm alias default $NODE_VERSION \
+    && nvm use default
+ENV PATH=$NVM_DIR/versions/node/v$NODE_VERSION/bin:$PATH
+RUN npm install --global yarn
+
+# Other tools
+RUN sudo apt update && sudo apt install -y fzf zsh
+# [UPGRADE] Claude Code, Codex CLI, and herdr via their native installers -- this is now the
+# recommended way to install Claude Code (replaces the npm install above); Codex and herdr
+# are net-new. Same install pattern for all three: designed for a single interactive user
+# (install under $HOME, wire PATH into that user's shell rc) -- run here as root at build
+# time, they land under /root and won't be on PATH for ssa/rba/etc. (same class of problem
+# `conda init` had, fixed earlier with a profile.d file). COPY, not symlink -- /root is
+# typically 700, so a symlink sitting in /usr/local/bin but pointing back into
+# /root/.local/bin/ would still be unreadable for non-root users; a real copy avoids that.
+RUN curl -fsSL https://claude.ai/install.sh | bash
+RUN curl -fsSL https://chatgpt.com/codex/install.sh | sh
+RUN curl -fsSL https://herdr.dev/install.sh | sh
+RUN cp /root/.local/bin/claude /root/.local/bin/codex /root/.local/bin/herdr /usr/local/bin/
+
+# [UPGRADE] Pi (open-source coding agent CLI, earendil-works). Its installer runs
+# `npm install -g @earendil-works/pi-coding-agent` and needs Node >=22.19.0 -- this image
+# defaults to 20.19.3 for everything else (NVM_DIR above), so install an isolated Node 22 via
+# nvm just for this, without touching the default.
+#
+# Invoking node22's own npm binary directly, without --prefix, silently installed into
+# v20.19.3's directory instead of its own (confirmed: /usr/local/bin/pi ended up a dangling
+# symlink to a v22 path that was never populated; the real files landed under v20.19.3/bin/pi,
+# an older cached version). Root cause: an inherited npm prefix config (e.g. /root/.npmrc)
+# overriding per-version isolation. Fixed with an explicit --prefix, which overrides any
+# .npmrc setting.
+RUN source $NVM_DIR/nvm.sh && nvm install 22
+RUN NODE22_BIN="$(ls -d $NVM_DIR/versions/node/v22.*/bin | head -1)" && \
+    "$NODE22_BIN/npm" install -g --prefix /opt/pi-npm @earendil-works/pi-coding-agent && \
+    ln -sf /opt/pi-npm/bin/pi /usr/local/bin/pi
+
+# [UPGRADE] Cursor's CLI. Its installer ships a whole app bundle, not a single binary: real
+# payload lands under ~/.local/share/cursor-agent/versions/<date-hash>/, with two symlinks
+# (`agent` and `cursor-agent`) in ~/.local/bin/ pointing into it. Both need their sibling
+# JS/native-module files alongside them to run -- a plain single-file `cp` (like
+# claude/codex/herdr above) would break it. Copy the whole app dir out from under /root (700,
+# unreadable to other users) instead, then re-create both symlinks pointing at the copy.
+RUN curl https://cursor.com/install -fsS | bash
+RUN cp -a /root/.local/share/cursor-agent /opt/cursor-agent-share && \
+    CURSOR_VER_DIR="$(ls -d /opt/cursor-agent-share/versions/*/ | head -1)" && \
+    ln -sf "${CURSOR_VER_DIR}cursor-agent" /usr/local/bin/cursor-agent && \
+    ln -sf "${CURSOR_VER_DIR}cursor-agent" /usr/local/bin/agent
+RUN /bin/uv venv /opt/tools
+RUN /opt/tools/bin/python -m ensurepip --upgrade && /opt/tools/bin/python -m pip install --no-cache-dir pre-commit
+ENV PATH="/opt/tools/bin:${PATH}"
+
+# Gitlab CLI
+RUN curl -kL https://gitlab.com/gitlab-org/cli/-/releases/v1.117.0/downloads/glab_1.117.0_linux_amd64.deb -o glab.deb \
+    && sudo dpkg -i glab.deb
