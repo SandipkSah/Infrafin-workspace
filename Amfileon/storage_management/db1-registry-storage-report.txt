@@ -1,0 +1,288 @@
+db1 /data: GitLab Container Registry Storage Report
+
+As of 2026-10-02 · Sandip Sah
+
+Summary
+
+The GitLab container registry uses 1.5 TB of the 6.4 TB used on db1 /data, and almost all of it is old image
+tags that nothing ever deletes. 71 repositories hold 4,651 tags. Registry garbage collection works correctly,
+but it only removes images that are no longer tagged, and no tag cleanup is running.
+
+- Fix: enable GitLab cleanup policies on the image-building projects. The data/ group alone holds about 1.4
+  TB.
+- Expected effect: a “keep the newest 10 tags” rule removes about 4,100 of 4,651 tags (89%). Each tag carries
+  0.5–0.9 GB of unique layers, so we expect roughly 1 TB or more to be freed. Space returns 24–48 h after the
+  tags are deleted.
+- No manual GC is needed, and it isn’t safe: the registry runs on the metadata database, where the old offline
+  registry-garbage-collect would delete live images.
+
+Findings
+
+All measurements were taken on db1 on 2026-10-02 with read-only commands.
+
+  -------------------------------------------------------------------------------------------------------------------
+  Check                                     Result                               What it means
+  ----------------------------------------- ------------------------------------ ------------------------------------
+  GitLab data volume                        gitlab-rails/shared/registry = 1.5T; The registry is the only large
+  (gitlab-ee_gitlab_data, under             artifacts 2 GB, packages 3.6 GB, git GitLab consumer
+  /data/docker-data-root)                   repos 15 GB, backups 57 MB           
+
+  Registry metadata DB                      21,832 blobs totalling 1,502 GB; 71  The DB tracks everything on disk, so
+                                            repositories; 4,651 tags             no orphaned files are out of GC’s
+                                                                                 reach
+
+  Online GC                                 2 blob tasks queued, 0 manifest      GC is healthy and caught up, with
+  (gitlab-ctl registry-database gc-stats)   tasks, 0 high-retry                  nothing left to collect
+
+  Tag naming                                CalVer releases (2026.09.21) plus    Most tags are RCs that are
+                                            many release candidates              superseded once the release ships
+                                            (2026.09.20rc1 … rc9)                
+
+  Tag timestamps                            Every tag older than July 2026 shows That’s when the legacy registry was
+                                            2026-07-11 10:30:36                  imported into the DB, so the true
+                                                                                 age of older tags is unknown
+
+  Docker images and build cache on db1      Largest image 3.8 GB; build cache    Not a meaningful consumer
+                                            306 MB                               
+
+  GitLab version                            Container gitlab-ee runs gitlab-ce   Risk of an unplanned upgrade on the
+                                            19.4.0 from an untagged image;       next recreate (see Open checks)
+                                            gitlab/gitlab-ce:latest is also      
+                                            present locally                      
+  -------------------------------------------------------------------------------------------------------------------
+
+Per-tag cost is unusually high. data/snp_analyst_etl stores 130 GB for 168 tags. This suggests each CI build
+produces a new large layer (likely the conda environment) instead of reusing a cached one. Fixing the
+Dockerfiles would slow future growth, but that’s a separate task.
+
+Sizes are compressed. A 28 GB image as shown by docker images takes about 13 GB in the registry.
+
+Storage per project
+
+By group
+
+  Group              Repositories    Tags      Size*
+  ---------------- -------------- ------- ----------
+  data                         48   3,427   1,443 GB
+  trading                       8     850     141 GB
+  dashboards                    3     338      71 GB
+  infrastructure                1       3      13 GB
+  it                            1      14      11 GB
+  research-tools                3       8       7 GB
+  apis                          1      11       2 GB
+
+* Per-repository sizes include layers shared with other repositories, so they add up to about 1,688 GB, while
+the actual on-disk total is 1,502 GB. Use them to rank repositories, not as exact amounts you’d get back.
+
+By repository (largest first)
+
+  Repository                                                    Tags     Size
+  ----------------------------------------------------------- ------ --------
+  data/snp_analyst_etl                                           168   130 GB
+  data/patronas_etl                                              148   120 GB
+  data/refinitiv_tick_etl                                        133   115 GB
+  data/locates_and_restricted_lists_etl                          138    84 GB
+  trading/statarb2_calibration_etl                               170    78 GB
+  data/factor_model_etl                                          163    73 GB
+  data/refinitiv_minutebars                                       85    68 GB
+  data/fundamental_data_etl                                      160    61 GB
+  data/identifier_mappings                                       290    60 GB
+  data/refinitiv_auction_data                                     66    58 GB
+  data/snp_periodic_etl                                           66    55 GB
+  data/universes_etl                                              85    55 GB
+  data/timebase_streams_etl                                       94    49 GB
+  dashboards/trading_dashboard                                   188    45 GB
+  data/refinitiv_futures_data                                    117    40 GB
+  data/emailreports_etl                                           66    39 GB
+  data/rics_of_interest_etl                                       64    39 GB
+  data/eu_auction_data_backfill_etl                               83    39 GB
+  data/amfuniverses_etl                                          137    31 GB
+  data/refinitiv_indicative_data_etl                             157    31 GB
+  data/utilities                                                  41    31 GB
+  trading/amftrading                                             425    31 GB
+  data/short_interest_etl                                         63    27 GB
+  dashboards/data_update                                         115    22 GB
+  data/dagster                                                   170    22 GB
+  data/gs_options_pricing_etl                                     55    21 GB
+  data/companies_of_interest_etl                                  36    20 GB
+  data/recon_etl                                                  49    18 GB
+  data/research_data_etl                                         278    18 GB
+  data/refinitiv_index_etl                                        16    13 GB
+  infrastructure/conda-image                                       3    13 GB
+  data/base-image                                                 23    13 GB
+  data/refinitiv_market_data_etl                                 112    12 GB
+  data/sentiment_data_etl                                         43    11 GB
+  data/nexdos_daily_stastics                                      34    11 GB
+  it/universal_base_container                                     14    11 GB
+  trading/dashboard                                               46    10 GB
+  data/extract_alpha_tm_etl                                       31    10 GB
+  data/stream_qc                                                  23   9.2 GB
+  data/amm_calibration_etl                                        94   8.5 GB
+  data/futures_datascope_etl                                      16   7.1 GB
+  trading/statarb2-dashboard                                      30   7.0 GB
+  trading/amfalpha                                                 5   6.4 GB
+  data/sharadar_sfa_etl                                           21   6.1 GB
+  data/other_datasources_etl                                      47   5.9 GB
+  trading/factors                                                  5   4.9 GB
+  dashboards/pnl_dashboard                                        35   4.5 GB
+  research-tools/amfpipelines                                      5   4.4 GB
+  data/amfuniverses                                                5   4.3 GB
+  data/data_apis                                                   4   4.1 GB
+  data/future_universes                                            5   3.7 GB
+  trading/mktdataapi                                             155   2.8 GB
+  data/template_test                                               2   2.7 GB
+  data/utilities_etl                                               1   2.6 GB
+  research-tools/backtest                                          1   2.4 GB
+  data/experiment                                                  1   2.4 GB
+  data/analyst_data_etl                                            1   2.3 GB
+  data/eod_positions_etl                                           1   2.3 GB
+  apis/gateway_simulator                                          11   2.2 GB
+  data/refinitiv_trade_tick_data_etl                              24   2.2 GB
+  data/futures_etl                                                 2   2.0 GB
+  data/test_infisical_etl                                          8   1.8 GB
+  data/etf_universes                                               1   1.4 GB
+  trading/statarb2-dashboard/sa2-go                               14   0.4 GB
+  research-tools/claude_marketplace/ade-pi-package-manifest        2   0.2 GB
+
+6 more repositories are empty (0 tags): data/test_project, data/test_project_docker,
+research-tools/amfuniverses, data/test_template_alex, data/trading_dashboard, devops/ci-test.
+
+The top 10 repositories account for about 850 GB and the top 20 for about 1,270 GB. 29 repositories have 50 or
+more tags.
+
+Proposed cleanup policies
+
+Cleanup policies are set per project: Project → Settings → Packages and registries → Container registry →
+Cleanup policies. This needs the Maintainer role. For many projects at once, use the API (PUT /projects/:id
+with container_expiration_policy_attributes).
+
+Phase 1: remove old release candidates (low risk)
+
+RCs are superseded by their release, and nobody should be deploying them to production.
+
+  Setting                  Value
+  ------------------------ -----------------------------
+  Enabled                  yes
+  Run cleanup              every day
+  Keep the most recent     5 tags
+  Keep tags matching       main|prod|stable|release-.*
+  Remove tags older than   7 days
+  Remove tags matching     .*rc\d+
+
+Phase 2: general retention (after the team agrees)
+
+  Setting                  Value
+  ------------------------ -------------------------------------------------------------------
+  Enabled                  yes
+  Run cleanup              every day
+  Keep the most recent     10 tags per image name
+  Keep tags matching       main|prod|stable|release-.* plus any version pinned in production
+  Remove tags older than   90 days
+  Remove tags matching     .*
+
+Notes:
+
+- The 90-day rule and the import date: all tags imported on 2026-07-11 count as created that day, so a 90-day
+  rule first deletes them on 2026-10-09. After that the policy runs normally. For faster relief, pick 14 or 30
+  days instead.
+- A deleted RC frees no space if its release is a retag of the same image. In that case the layers stay
+  referenced by the release. Phase 1 may free less than expected, and Phase 2 frees the rest.
+- For immediate relief, the bulk tag-delete API applies the same rules right away, per registry repository
+  (once per hour per repository):
+  DELETE /projects/:id/registry/repositories/:repo_id/tags?name_regex_delete=...&keep_n=...&older_than=...
+
+How to set up a cleanup policy in the GitLab UI
+
+Repeat these steps for each image project. Start with a pilot: trading/mktdataapi has 155 tags but only 2.8
+GB, so a mistake there costs little. Then do the large data/ projects.
+
+Before you start
+
+  -------------------------------------------------------------------------------------------------------------
+  Check                                                  Why
+  ------------------------------------------------------ ------------------------------------------------------
+  You have the Maintainer (or Owner) role on the project Only Maintainers can edit cleanup policies
+
+  The team has agreed on the keep-rules                  Deleted tags can’t be restored
+
+  You know which tags production pulls from this project Those tags must match “Keep tags matching”, or be
+                                                         among the newest 10
+  -------------------------------------------------------------------------------------------------------------
+
+Steps
+
+1.  Open the project in GitLab, e.g. data/snp_analyst_etl.
+2.  In the left sidebar, go to Settings → Packages and registries.
+3.  In the Cleanup policies section, click Edit cleanup rules (shown as Set cleanup rules if the project has
+    never had a policy).
+4.  Turn on Enable cleanup policy.
+5.  Run cleanup: select Every day.
+6.  Under Keep these tags:
+    1.  Keep the most recent: select 10 tags per image name.
+    2.  Keep tags matching: enter main|prod|stable|release-.*, plus any production versions, e.g.
+        main|prod|stable|release-.*|2026\.08\.4.
+7.  Under Remove these tags:
+    1.  Remove tags older than: select 90 days (or 14/30 days for faster relief, see Notes above).
+    2.  Remove tags matching: enter .*.
+8.  Click Save changes. The page now shows Next cleanup scheduled to run on …. Note that date.
+9.  After the first run, check the result:
+    1.  Deploy → Container registry in the project: the tag count per image should have dropped to about 10
+        plus the kept tags.
+    2.  On db1: docker exec gitlab-ee gitlab-ctl registry-database gc-stats. The review queues fill, then
+        drain as GC removes the data.
+    3.  On db1, 24–48 h later: df -h /data shows the space coming back.
+
+Regex rules for the two pattern fields
+
+  Rule                                                Correct            Wrong
+  --------------------------------------------------- ------------------ ------------------------------------
+  Separate alternatives with |, no commas or spaces   main|prod|stable   main, prod, stable
+  “Anything” is .*, not *                             release-.*         release-*
+  Don’t type the anchors; the page adds \A and \z     .*rc\d+            \A.*rc\d+\z
+  The pattern must match the whole tag name           .*rc\d+            rc\d+
+  A literal dot needs a backslash                     2026\.08\.4        2026.08.4 (also matches 2026x08y4)
+
+The tag latest is always kept, so it doesn’t need to be in the keep pattern.
+
+How the rules combine
+
+A tag is deleted only if it matches “Remove tags matching”, does not match “Keep tags matching”, is not among
+the newest 10 of the candidates for its image, and is older than the chosen age. If any keep rule applies, the
+tag stays.
+
+Changing or stopping a policy
+
+  Goal             Action
+  ---------------- -------------------------------------------------------------------------------------
+  Pause cleanup    Turn off Enable cleanup policy and click Save changes. Future runs stop
+  Change a rule    Edit the field and save. Any saved change reschedules the next run
+  Undo deletions   Not possible: deleted tags can’t be restored, so the image would have to be rebuilt
+
+Rollout plan
+
+1.  Confirm the open checks below, especially which tags production runs.
+2.  Agree on the keep-rules with the image owners (data/ETL, trading, dashboards).
+3.  Phase 1 (RC cleanup): try it on one small repository first, then roll out to all projects via the API.
+4.  Phase 2 (keep newest 10): roll out to the projects with 50+ tags (29 repositories).
+5.  Watch reclamation for 48 h with gitlab-ctl registry-database gc-stats and df -h /data.
+6.  Follow-up: fix Dockerfile layer caching so each build stops adding 0.5–0.9 GB.
+
+Open checks before deleting
+
+- ☐ Existing cleanup policies: are any already enabled? (ContainerExpirationPolicy.where(enabled: true) in
+  gitlab-rails runner)
+- ☐ Deployed tags: on every host that runs these images, list them with
+  docker ps --format '{{.Image}}' | grep <registry-host>, and check compose and CI deploy files for pinned
+  versions. Deleting a tag doesn’t stop a running container, but a restart or redeploy that needs to pull it
+  will fail.
+- ☐ RCs retagged as releases: compare tags.manifest_id in the registry DB to estimate how much Phase 1 really
+  frees.
+- ☐ Pin the GitLab image: if /srv/docker/gitlab-ee compose uses gitlab/gitlab-ce:latest, pin it to 19.4.0-ce.0
+  before anyone recreates the container. Otherwise it upgrades silently and runs registry DB migrations.
+- ☐ Cleanup worker capacity: check Admin → Settings → CI/CD → Container Registry. Defaults may need several
+  daily runs to work through 4,651 tags.
+
+Rest of /data
+
+The other consumers (ClickHouse 1.8 TB, MinIO 1.2 TiB, container logs 702 GB, ClickHouse staging 368 GB and
+smaller volumes) are covered in the separate db1 /data Storage Overview report.

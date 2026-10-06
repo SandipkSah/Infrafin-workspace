@@ -167,7 +167,14 @@ def read_text_or_none(path):
 # unrelated names -- e.g. a test-counter variable "PASS=0; FAIL=0" got
 # falsely redacted into "PASS=REDACTED" during testing. REQUIREPASS/MASTERAUTH
 # are specific enough to catch the real directives without that collision.
-_SECRET_KEYWORD = r'(?:PASSWORD|PASSWD|PWD|REQUIREPASS|MASTERAUTH|SECRET|TOKEN|API[_-]?KEY|PRIVATE[_-]?KEY|CREDENTIAL|ACCESS[_-]?KEY|CLIENT[_-]?SECRET|PASSPHRASE|SIGNING)'
+# _PASS (with the leading underscore literal) rather than bare PASS: a very
+# common real-world suffix (DB_PASS, SMTP_PASS, LDAP_PASS, IMAP_PASS -- e.g.
+# the sameersbn/gitlab image's entire env var convention) that PASSWORD/
+# PASSWD/PWD don't cover as a substring, found sitting completely
+# unredacted -- real value, no REDACTED, no ${VAR} -- in gitlab's compose
+# file. The required underscore keeps the original PASS=0;FAIL=0
+# false-positive (a bare, unprefixed test-counter name) from matching again.
+_SECRET_KEYWORD = r'(?:PASSWORD|PASSWD|PWD|_PASS|REQUIREPASS|MASTERAUTH|SECRET|TOKEN|API[_-]?KEY|PRIVATE[_-]?KEY|CREDENTIAL|ACCESS[_-]?KEY|CLIENT[_-]?SECRET|PASSPHRASE|SIGNING)'
 _ASSIGNMENT_RE = re.compile(
     rf'(?i){_SECRET_KEYWORD}\w*\s*[:=]\s*(["\']?)([^"\'<>\s]+)\1'
 )
@@ -225,7 +232,7 @@ def _mask_dollar_expressions(line):
 # proxy service. Masked out (whole-word only, via \b) before any keyword
 # regex runs, same technique as _mask_dollar_expressions. Extend this list if
 # another common non-secret term collides the same way.
-_KNOWN_SAFE_TERMS_RE = re.compile(r'(?i)\bhtpasswd\b')
+_KNOWN_SAFE_TERMS_RE = re.compile(r'(?i)\b(?:htpasswd|proxy_pass)\b')
 
 
 def _mask_known_safe_terms(line):
@@ -240,8 +247,51 @@ def _is_placeholder(val):
     `token = "REDACTED"` still structurally looks like `keyword = value` to
     these same patterns -- every .sanitized file would re-trigger itself
     forever, both here and in the pre-commit hook that shares this logic.
+
+    This function already recognized the bare `$VAR` form (no braces), but
+    until this fix, `extract_compose_environment`'s own already-externalized
+    check (`val_stripped.startswith('${')`) only recognized the BRACED form
+    and called this function nowhere -- `$MINIO_ROOT_PASSWORD` (valid Compose
+    substitution syntax, no braces) was misread as a 20-character hardcoded
+    LITERAL string, not a reference, and treated as a conflict with the
+    already-externalized key of the same name in `.env`. A real-world
+    near-miss on gpu1's `minio`: comparing that literal's length (20) against
+    the genuinely real `.env` value's length (18, itself already stale) wrongly
+    looked like "two different real secrets," and manually "fixing" the
+    supposed mismatch by copying the compose file's literal text into `.env`
+    actually overwrote the correct value with the nonsense self-reference
+    `MINIO_ROOT_PASSWORD=$MINIO_ROOT_PASSWORD` -- caught only because
+    `docker compose config` then warned the variable was "not set" and the
+    real value had to be recovered from the live container's own baked-in
+    environment. Both `extract_compose_environment` branches now call this
+    function instead of re-implementing a narrower `${` -only check.
     """
     return val.startswith('$') or val == 'REDACTED'
+
+
+# A non-secret config KEY can merely CONTAIN a tracked keyword as a substring
+# (our keyword regexes have no word-boundary check before the keyword, by
+# design -- see _KNOWN_SAFE_TERMS_RE above -- needed to still match compound
+# names like SMTP_PASSWORD). Found via a real proxy nginx.tmpl: nginx's
+# `server_tokens off;` directive (hides the nginx version in headers --
+# nothing to do with auth tokens) contains "token", so _SPACE_ASSIGNMENT_RE
+# matched it and captured the value "off;". sanitize_lines' cross-file
+# known-secret propagation (designed for a genuinely duplicated real secret,
+# e.g. the same DOCKER_AUTH_CONFIG copy-pasted into several [[runners]]
+# blocks) then treated "off;" as a confirmed secret and redacted EVERY other
+# occurrence of that exact string anywhere in the file -- turning harmless,
+# unrelated directives (auth_basic, auth_request, ssl_session_tickets,
+# proxy_buffering, access_log, default, ssl_prefer_server_ciphers) into
+# invalid nginx syntax ("ssl_prefer_server_ciphers REDACTED;"), which would
+# have broken the live proxy on deploy. A real secret is never just a bare
+# on/off/true/false/yes/no toggle -- stripping common trailing punctuation
+# (the directive-terminating ";", or ":"/",") before comparing also catches
+# the semicolon-terminated shape seen here.
+_COMMON_TOGGLE_VALUES = {'on', 'off', 'true', 'false', 'yes', 'no'}
+
+
+def _is_common_toggle(val):
+    return val.rstrip(';:,').strip('"\'').lower() in _COMMON_TOGGLE_VALUES
 
 
 def keyword_matches_in_line(line):
@@ -260,19 +310,19 @@ def keyword_matches_in_line(line):
     found = set()
     for m in _ASSIGNMENT_RE.finditer(masked):
         val = m.group(2)
-        if val and not _is_placeholder(val):
+        if val and not _is_placeholder(val) and not _is_common_toggle(val):
             found.add(val)
     for m in _SPACE_ASSIGNMENT_RE.finditer(masked):
         val = m.group(2)
-        if val and not _is_placeholder(val):
+        if val and not _is_placeholder(val) and not _is_common_toggle(val):
             found.add(val)
     for m in _XML_TAG_RE.finditer(masked):
         val = m.group(2).strip()
-        if val and not _is_placeholder(val):
+        if val and not _is_placeholder(val) and not _is_common_toggle(val):
             found.add(val)
     for m in _QUOTED_KEY_ASSIGNMENT_RE.finditer(masked):
         val = m.group(2)
-        if val and not _is_placeholder(val):
+        if val and not _is_placeholder(val) and not _is_common_toggle(val):
             found.add(val)
     return found
 
@@ -725,7 +775,33 @@ def extract_compose_environment(lines, existing_env_keys, existing_example_keys)
             continue
 
         cur_indent = len(rstripped) - len(rstripped.lstrip(' '))
-        if cur_indent <= env_block_indent:
+        # A YAML block-sequence item's "-" is allowed to sit at the SAME
+        # indentation as the mapping key that introduces it, not just deeper
+        # -- both
+        #     environment:
+        #       - KEY=value
+        # and
+        #     environment:
+        #     - KEY=value
+        # are valid, equivalent YAML. Treating "same indentation" as "the
+        # block just ended" (the naive cur_indent <= env_block_indent check)
+        # meant the very FIRST list item of a same-indent-style block looked
+        # like it was already outside environment:, so in_env_block flipped
+        # false before a single line was processed -- silently zeroing out
+        # extraction for the ENTIRE block, not just one line. Found via a
+        # real sameersbn/gitlab-style compose file using this indentation
+        # style throughout: none of DB_USER/DB_PASS/SMTP_PASS/LDAP_PASS/etc.
+        # ever got extracted or even considered, and the ones classified
+        # secret fell through everything (including the generic REDACTED
+        # fallback -- see the _PASS keyword fix below) with their real
+        # values sitting untouched in the supposedly-sanitized output.
+        # Fix: same indentation only means "block ended" when the line is
+        # NOT itself a list-item continuation (i.e. a genuine sibling key
+        # like the next service or "ports:" at that same level) -- a "-"
+        # item at that exact indentation is still part of the sequence.
+        if cur_indent == env_block_indent and stripped.startswith('-'):
+            pass
+        elif cur_indent <= env_block_indent:
             in_env_block = False
             continue  # reprocess this line as normal (outside the block)
 
@@ -737,10 +813,56 @@ def extract_compose_environment(lines, existing_env_keys, existing_example_keys)
             indent, item = lm.groups()
             key, raw_val = item.split('=', 1)
             key = key.strip()
+
+            # A plain (unquoted) YAML scalar can fold across the FOLLOWING
+            # lines too, joined purely by deeper indentation -- no "|"/">"
+            # indicator required, unlike the map-style ("key: value") case
+            # below. Found via a real sameersbn/gitlab compose file's
+            # `- GITLAB_OMNIBUS_CONFIG=|` list item: that trailing "|" is
+            # just a literal character starting the value (block-scalar
+            # syntax only has special meaning right after "key:", not
+            # "key="), and the value's actual bulk -- the whole omnibus
+            # Ruby config -- continued on the next several, more deeply
+            # indented lines. Naive single-line extraction moved only that
+            # first one-character fragment to ${VAR}, leaving the real
+            # continuation lines behind as orphaned, structurally invalid
+            # YAML once the key line was rewritten -- `docker compose
+            # config` failed to even parse the result. Same detection and
+            # untouched-passthrough treatment as an explicit block scalar:
+            # if the next line is more indented than this item, the whole
+            # span is left alone and never ${VAR}-extracted.
+            next_more_indented = False
+            if i + 1 < n:
+                nxt_r = lines[i + 1].rstrip('\n')
+                if nxt_r.strip() != '' and (len(nxt_r) - len(nxt_r.lstrip(' '))) > len(indent):
+                    next_more_indented = True
+
+            if next_more_indented:
+                range_start = len(new_lines) + 1
+                new_lines.append(line)
+                skipped_multiline.append(key)
+                item_indent = len(indent)
+                i += 1
+                while i < n:
+                    nxt = lines[i]
+                    nxt_r = nxt.rstrip('\n')
+                    if nxt_r.strip() == '':
+                        new_lines.append(nxt)
+                        i += 1
+                        continue
+                    nxt_indent = len(nxt_r) - len(nxt_r.lstrip(' '))
+                    if nxt_indent <= item_indent:
+                        break
+                    new_lines.append(nxt)
+                    i += 1
+                skipped_line_ranges.append((range_start, len(new_lines)))
+                handled = True
+                continue  # already advanced i; skip the trailing i += 1 below
+
             val_text, comment = split_value_and_comment(raw_val)
             val_stripped = strip_quotes(val_text)
             comment_suffix = f'  {comment}' if comment else ''
-            if val_stripped.startswith('${'):
+            if _is_placeholder(val_stripped):
                 new_lines.append(line)
             elif key in existing_env_keys:
                 conflicts.append((key, i + 1))
@@ -783,7 +905,7 @@ def extract_compose_environment(lines, existing_env_keys, existing_example_keys)
             val_text, comment = split_value_and_comment(val)
             val_stripped = strip_quotes(val_text)
             comment_suffix = f'  {comment}' if comment else ''
-            if val_stripped == '' or val_stripped.startswith('${'):
+            if val_stripped == '' or _is_placeholder(val_stripped):
                 new_lines.append(line)
             elif key in existing_env_keys:
                 conflicts.append((key, i + 1))

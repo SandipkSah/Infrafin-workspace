@@ -33,7 +33,8 @@ sudo mv /tmp/gitleaks /usr/local/bin/
 # trufflehog (official install script)
 curl -sSfL https://raw.githubusercontent.com/trufflesecurity/trufflehog/main/scripts/install.sh | sudo sh -s -- -b /usr/local/bin
 
-# detect-secrets (pre-commit hook only, not used by sanitize_service_files.py) --
+# detect-secrets (used by BOTH sanitize_service_files.py as a 4th signal
+# AND the pre-commit hook) --
 # pipx keeps it isolated from system Python; installs the CLI globally
 sudo apt install -y pipx && pipx ensurepath
 pipx install detect-secrets
@@ -41,6 +42,31 @@ pipx install detect-secrets
 
 which gitleaks trufflehog detect-secrets   # confirm all three resolve
 ```
+
+**Gotcha, found on gpu1**: a `pip install --user` (or `pipx install`) puts the
+package under the INSTALLING user's own home directory
+(`~/.local/lib/python3.x/site-packages/`). Symlinking the resulting
+`~/.local/bin/detect-secrets` into `/usr/local/bin/` (so a second user --
+typically root, since `/srv/docker/*` is usually root-owned -- can also run
+the command) makes the *binary* resolve, but NOT the *package*: Python's
+user-site-packages lookup is based on the EXECUTING user's home, not the
+file owner's, so root running that symlinked script still raises
+`ModuleNotFoundError: No module named 'detect_secrets'`. This silently
+degrades `sanitize_service_files.py`'s detection to 3 signals instead of 4
+whenever it's run as root (prints a `WARNING: detect-secrets exited 1
+unexpectedly` and continues, which is easy to miss) -- and since the
+pre-commit hook almost always runs as root too (via `git commit` on a
+root-owned repo), this breaks that safety net as well, silently. Fix: give
+root (or whichever user actually runs these tools) its own real install,
+not just a symlink to someone else's:
+```bash
+curl -sS https://bootstrap.pypa.io/get-pip.py -o /root/get-pip.py
+python3 /root/get-pip.py --user
+/root/.local/bin/pip install --user detect-secrets
+ln -sf /root/.local/bin/detect-secrets /usr/local/bin/detect-secrets
+```
+Verify with `detect-secrets scan --all-files <anyfile>` as that same user --
+it should print JSON and exit 0, not traceback.
 
 Gitleaks and trufflehog are used as **detectors only** — never for verification. The tooling
 always passes `--no-verification`/`--redact` so nothing ever makes a live API
@@ -246,6 +272,64 @@ someone manually reviews that block and decides how to handle it**. If the
 file needed other changes too, the resulting `.sanitized` still contains that
 block completely untouched — the tool prints a loud warning either way; don't
 skip reading it.
+
+**Gotcha #5** (found on gpu1, fixed in `sanitize_service_files.py`): a
+non-secret config KEY can merely *contain* a tracked keyword as a substring —
+our keyword regexes have no word-boundary check before the keyword, by
+design (needed to still match compound names like `SMTP_PASSWORD`). nginx's
+`server_tokens off;` directive (hides the nginx version in response headers —
+nothing to do with auth tokens) contains "token", so the space-assignment
+keyword regex matched it and captured the value `off;`. The generic
+redaction pass' cross-file known-secret propagation (meant for a genuinely
+duplicated real secret, e.g. the same credential copy-pasted into several
+config blocks) then treated `off;` as a confirmed secret and redacted every
+other occurrence of that exact string anywhere in the file — silently
+turning harmless, unrelated directives (`auth_basic`, `auth_request`,
+`ssl_session_tickets`, `proxy_buffering`, `access_log`, `default`,
+`ssl_prefer_server_ciphers`) into invalid nginx syntax
+(`ssl_prefer_server_ciphers REDACTED;`), which would have broken the live
+proxy on deploy. None of gitleaks/trufflehog/detect-secrets flagged anything
+on this file — this was purely the tool's own keyword fallback. Fixed by
+never treating a bare `on`/`off`/`true`/`false`/`yes`/`no` toggle value
+(trailing `;`/`:`/`,` stripped first) as a secret, regardless of which
+keyword matched the line it's on. Always inspect a `.sanitized` file's
+*actual diff* before trusting a redaction count, especially on a file type
+(`.conf`, `.tmpl`) the tool doesn't structurally understand the way it does
+YAML/XML — a plausible-sounding redaction count is not the same as a correct
+one.
+
+**Gotcha #6** (found on gpu1, fixed in `sanitize_service_files.py` — the
+closest call of any bug this project has hit, worth reading carefully): a
+compose file can reference a variable with BARE `$VAR` syntax, no braces
+(`MINIO_ROOT_PASSWORD: $MINIO_ROOT_PASSWORD`) — valid Compose substitution,
+functionally identical to `${VAR}`. The tool's `_is_placeholder` helper
+already recognized this form, but `extract_compose_environment`'s own
+already-externalized check re-implemented a narrower one
+(`val_stripped.startswith('${')`) that only matched the braced form, and
+never called `_is_placeholder` at all. So a bare `$VAR` value was misread as
+a 20-character hardcoded LITERAL STRING (the literal text `$MINIO_ROOT_PASSWORD`
+itself, not a reference) and reported as a `CONFLICT` against the
+already-externalized key of the same name already in `.env`. Comparing that
+fake literal's length (20) against the real `.env` value's length (18)
+looked exactly like "two different real secrets, which one is right?" —
+indistinguishable from a genuine stale-value case (see `watchtower`'s real
+stale `.env.example` earlier in this same session) without reading the
+actual compose line itself. Manually "resolving" the supposed conflict by
+copying the compose file's literal text into `.env` replaced the correct
+password with the nonsense self-reference `MINIO_ROOT_PASSWORD=$MINIO_ROOT_PASSWORD`
+— caught only because `docker compose config` then warned the variable was
+"not set, defaulting to blank," and the real value had to be recovered from
+the *live container's own baked-in environment*
+(`docker inspect <container> --format '{{range .Config.Env}}{{println .}}{{end}}'`),
+since no file on disk held it anymore. Had the container needed a real (not
+dry-run) recreate before this was caught, MinIO would have come up with a
+blank root password. Fixed by having both `extract_compose_environment`
+branches call `_is_placeholder` instead of their own narrower check.
+**Lesson, independent of the bug fix**: before ever treating a `CONFLICT`
+line's hardcoded-looking value as something to reconcile, read the actual
+compose line first (safe — compose syntax, not the secret itself) and
+confirm it isn't already a `$VAR`/`${VAR}` reference under a different name
+or form.
 
 Repeat Step 4 → dry run → fix false positives → dry run, service by service,
 until `.githooks/pre-commit` reports nothing left (or only things you've

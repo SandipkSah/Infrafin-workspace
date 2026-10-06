@@ -173,7 +173,7 @@ def mask_dollar_expressions(line):
 # assignment. Same fix as sanitize_service_files.py's _mask_known_safe_terms
 # (found via a real proxy service's docker compose up -d --dry-run showing an
 # actual functional break, not just over-redaction).
-known_safe_terms_re = re.compile(r'(?i)\bhtpasswd\b')
+known_safe_terms_re = re.compile(r'(?i)\b(?:htpasswd|proxy_pass)\b')
 
 def mask_known_safe_terms(line):
     return known_safe_terms_re.sub(lambda m: ' ' * len(m.group(0)), line)
@@ -183,6 +183,18 @@ def is_placeholder(val):
     # the latter, a properly-sanitized 'token = \"REDACTED\"' line still looks
     # like a fresh secret to this same pattern and would block forever.
     return val.startswith(chr(0x24)) or val == 'REDACTED'
+
+# A non-secret config KEY can merely CONTAIN a tracked keyword as a substring
+# (no word-boundary check before the keyword, by design -- needed to still
+# match compound names like SMTP_PASSWORD). nginx's 'server_tokens off;'
+# directive contains \"token\"; same bug found and fixed in
+# sanitize_service_files.py (see its README Gotcha #5) -- mirrored here since
+# this hook reimplements the same matching logic independently and does not
+# share that fix automatically.
+common_toggle_values = {'on', 'off', 'true', 'false', 'yes', 'no'}
+
+def is_common_toggle(val):
+    return val.rstrip(';:,').lower() in common_toggle_values
 
 for dirpath, _, filenames in os.walk(root):
     for name in filenames:
@@ -198,10 +210,10 @@ for dirpath, _, filenames in os.walk(root):
             found = False
             for rx in (assignment_re, space_re, quoted_key_re):
                 m = rx.search(masked)
-                if m and m.group(2) and not is_placeholder(m.group(2)):
+                if m and m.group(2) and not is_placeholder(m.group(2)) and not is_common_toggle(m.group(2)):
                     found = True
             m = xml_re.search(masked)
-            if m and m.group(2).strip() and not is_placeholder(m.group(2).strip()):
+            if m and m.group(2).strip() and not is_placeholder(m.group(2).strip()) and not is_common_toggle(m.group(2).strip()):
                 found = True
             if found:
                 print(f'  {rel}:{i}  (key-name pattern)')

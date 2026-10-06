@@ -1,0 +1,150 @@
+# .gitignore for cpu2's git-init'd /srv/ (repo root is /srv/, not /srv/docker/
+# -- other /srv siblings exist: cron/, data/). Host-specific -- see
+# gitignore-db1/gitignore-db2/gitignore-cpu1 for those hosts' separate
+# copies; do not merge them, since a finding specific to one host can
+# wrongly exclude something another host actually needs tracked, or leave
+# a no-op pattern for something that never existed there. `git init` runs
+# from /srv/ itself, not /srv/docker/.
+#
+# ---- scope: only docker/ is tracked, everything else at /srv root is ignored ----
+# cron/ and data/ (and anything else that shows up at the /srv root later)
+# are out of scope for this repo entirely -- not audited, not reviewed for
+# secrets, just excluded outright. Revisit deliberately if this repo's
+# scope is ever meant to grow beyond docker/.
+/*
+!/docker/
+!/.gitignore
+!/.githooks/
+
+# ---- everything below only ever applies inside docker/, since that's the only
+#      top-level entry not excluded above ----
+#
+# This file holds only host-wide GENERIC rules (secret file patterns, runtime
+# data, stale directories, nested repos). It deliberately does NOT list any
+# specific per-service file -- those live in a per-directory .gitignore
+# instead, one level down, right next to the file it excludes.
+#
+# sanitize_service_files.py --write generates each service's .gitignore for
+# you automatically (only for services where it actually found something to
+# redact) -- review its output and copy it to
+# /srv/docker/<service>/.gitignore. This root file only needs manual edits
+# for genuinely host-wide patterns or genuinely root-level (/docker/<file>)
+# loose files.
+
+# ---- secrets: never track ----
+.env
+.env.*
+# .env.example is the deliberate exception: it's the git-trackable companion
+# to .env (secrets blanked, config values kept as real values -- built by
+# build_env_example.py from a service's real .env). ".env.*" above would
+# otherwise silently exclude it too, since it also starts with ".env." --
+# this exact gap was found and fixed on db1/db2, applying the fix here from
+# the start rather than waiting to rediscover it.
+!.env.example
+*.env
+*.env_*
+*.key
+*.pem
+*.pfx
+*.p12
+*.der
+htpasswd
+# cpu2's proxy/htpasswd is a DIRECTORY (one file per cpu2 environment, same
+# shape as cpu1), not a single file like db1/db2 -- the bare "htpasswd"
+# pattern above only matches the file shape; this one covers the directory
+# shape too.
+htpasswd/
+users.acl
+ldap.toml
+
+# cpu2-specific: proxy/CA.key is the actual CA private key that signs every
+# other cert on this host -- already covered by the generic *.key pattern
+# above, called out explicitly here because of how sensitive it is (same
+# finding as cpu1's proxy/CA.key). Confirm it's genuinely excluded before
+# the first commit, don't just assume the generic pattern caught it.
+
+# NOTE: .gitignore does NOT support trailing inline comments -- a "#"
+#      after a pattern on the same line is parsed as part of the pattern
+#      itself (making it match nothing), not stripped as a comment. Comments
+#      must be on their own line, before the pattern.
+
+# ---- runtime data / logs / backups: not config, don't track ----
+*.log
+*.rdb
+data/
+restored-data/
+*.tar
+*.tar.gz
+*.tar.bz2
+*.tar.gz.base64
+
+# ---- editor/OS artifacts: never intentional, safe to exclude anywhere ----
+*.swp
+*.swo
+*~
+.DS_Store
+
+# ---- large/misc runtime data directories found by direct review ----
+# conda/redis-data/ holds a live dump.rdb (already caught by *.rdb above,
+# excluding the whole directory too since more could land there later).
+redis-data/
+
+# ---- nested repos: managed by their own .git, not this one ----
+# dockprom/ has its own .git (a customized clone of the upstream project,
+# same as on db1/db2/cpu1) -- excluded wholesale so the top-level repo
+# doesn't treat it as an embedded repo/gitlink. Commit its local changes
+# inside the directory itself: `cd docker/dockprom && git add/commit`.
+dockprom/
+
+# ---- conda/ is a dev/testing sandbox with heavy, messy clutter (multiple
+#      .env variants, many stray backup/old compose and Dockerfile
+#      variants) -- excluded WHOLESALE, same category as vault/vault2/
+#      infisical below: needs a deliberate by-hand pass, not blind bulk
+#      tracking. Important: being in run_all.sh's SKIP array only stops the
+#      SANITIZER from scanning it -- it does NOT stop `git add -A` from
+#      staging its raw, never-scanned contents. Learned the hard way: the
+#      pre-commit hook's key-name check caught real secret-shaped
+#      assignments in conda/docker-compose.yaml and conda/entrypoint.sh on
+#      the very first `git add -A` here, because this entry was originally
+#      just a comment, not an actual exclusion pattern. ----
+conda/
+
+# ---- stale/duplicate/abandoned files worth deleting outright, ignored here as a fallback ----
+# watchtower/docker-compose.yaml.bak, conda/docker-compose.bak,
+# conda/Dockerfile.bak, conda/entrypoint.sh.bak -- all caught by the
+# standard *.bak pattern below.
+# NOTE: gitignore patterns are case-sensitive on Linux -- bracket expressions
+# below match any case, same lesson learned on db1/db2 (a real "CA.pem.BAK"
+# was missed by a bare "*.bak" there).
+*.[bB][aA][kK]
+*.save
+*.old
+*.backup
+*-old/
+*_old/
+*test/
+*failed/
+*.back.yaml
+*.new.yaml
+
+# ---- date-suffixed stale duplicate files: a shape not seen on db1/db2/cpu1
+#      -- conda/Dockerfile-2026-02-27, conda/docker-compose.yaml-2026-02-27
+#      (trailing -YYYY-MM-DD), conda/docker-compose.2026.03.14.yaml (dotted
+#      YYYY.MM.DD before the extension). Same "better to rm than carry
+#      forever" category as the plain .bak files above, just a different
+#      naming convention someone used on this host. ----
+*-[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]
+*.[0-9][0-9][0-9][0-9].[0-9][0-9].[0-9][0-9].*
+
+# ---- cert/key material directories: never track ----
+certs/
+certs_old/
+pki/
+tmp-conf/
+
+# ---- everything else inside docker/ ----
+# Any file not covered by a rule above (a clean docker-compose.yaml, nginx.conf,
+# healthcheck.py, etc. that had nothing to redact) is tracked as its real,
+# unmodified self by default. Per-service .gitignore files (one per service
+# directory, generated by sanitize_service_files.py --write when it finds
+# something) are what carve out the specific exceptions.

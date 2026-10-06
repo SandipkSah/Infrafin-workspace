@@ -34,14 +34,25 @@ mkdir -p "$LOG_DIR"
 #   healthchecks/, nessie/ (db1)              - also root-only .env; treated the same as the
 #                                               Postgres cluster: live/sensitive enough to keep out
 #                                               of the bulk/scripted pass.
-#   vault/, vault2/, infisical/ (db1)         - dedicated secrets-management services; deliberately
-#                                               excluded from the bulk pass, same reasoning as the
+#   vault/, vault2/, infisical/ (db1),        - dedicated secrets-management services; deliberately
+#   vault-agent-example/ (cpu1)                 excluded from the bulk pass, same reasoning as the
 #                                               Postgres cluster -- handle by hand, not blind-scanned.
+#                                               vault-agent-example/ holds a live vault-token despite
+#                                               the "example" name; treat it as real until proven otherwise.
+#   conda/ (cpu1)                             - dev/testing sandbox with heavy, messy clutter (8
+#                                               different .env variants, a vault-token, many stray
+#                                               backup/old compose files) -- needs a deliberate by-hand
+#                                               pass, not a blind bulk run.
 #   gitlab-ee-failed/, grafana-loki-old/,     - stale/dead duplicates (see naming), not worth
 #   sentry-old/, sentrytest/, infisical_test/   review time; kept out of git, never deleted.
+#   archived/ (gpu1)                          - holding pen of retired services (postgres,
+#                                               trading/trading-production/trading-test,
+#                                               gitlab-runner subdirs) -- not structured as a
+#                                               normal single-compose-file service directory,
+#                                               and not live, so not worth scanning.
 #   All of the above: handle by hand, as root, when actually working on them.
 SKIP=(dockprom zulip gittlab-runner pg-cluster-instance-1 pg-cluster-instance-2 healthchecks nessie \
-      netbox-docker elastdocker vault vault2 infisical \
+      netbox-docker elastdocker vault vault2 infisical vault-agent-example conda archived \
       gitlab-ee-failed grafana-loki-old sentry-old sentrytest infisical_test)
 
 should_skip() {

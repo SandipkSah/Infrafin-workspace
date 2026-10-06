@@ -154,7 +154,83 @@ the goal. Option C is the fallback if A's testing surfaces a blocker.
 
 ---
 
-## 6. Sources
+## 6. Manual offline GC on the current `registry:2` setup — working notes (2026-09-28)
+
+Separate from the metadata-DB project above (§4 Option A) — this is running the **classic offline
+GC** that plain `registry:2` already supports today (§4 Option C), as an immediate/interim action.
+
+### Scale (measured on nexdos, 2026-09-28)
+
+```bash
+du -sh /var/lib/docker/volumes/gitlab_registry-data/_data   # 925G
+```
+
+Repo/tag counts via direct filesystem walk (no auth needed — reads the on-disk v2 layout directly:
+`<root>/docker/registry/v2/repositories/<repo>/_manifests/tags/<tag>/`):
+
+- **24 repositories, 3,034 tags total**
+- Biggest by tag count: `dagster/user-code/pipeline` (658), `idp/nexdos_app/backend` (586),
+  `idp/nexdos_app/frontend` (585), `idp/nexdos_app/frontend/cache` (418)
+- **Blob count: 21,925** (measured 2026-09-28 via
+  `find <root>/blobs/sha256 -mindepth 2 -maxdepth 2 -type d | wc -l`). This is the number that
+  actually predicts GC sweep-phase duration (sweep walks every blob object), more so than tag count
+  or raw GB. 925GB ÷ 21,925 ≈ 42MB average blob size — a moderate count of fairly large objects,
+  not millions of tiny files, which is the favorable case for walk speed. Expect the `--dry-run`
+  scan to land in low minutes on reasonable local disk I/O, not hours — the "large registry, hours+"
+  caution in the Amfileon runbook context was calibrated for 100k+ tag/blob counts, well above this.
+
+### Disk space blocker (hit 2026-09-28)
+
+```
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/md2        3.5T  3.1T  248G  93% /
+```
+Only **248 GB free on `/`** (which also holds `/var/lib/docker`) — a full local backup of the
+925 GB registry volume **does not fit on this host's disk at all**, regardless of destination
+directory. Options identified: (a) find another mounted disk/NAS with 900GB+ free (`df -h` full +
+`lsblk` — not yet checked), (b) stream a backup directly to a remote host via `rsync` (resumable,
+no local intermediate copy needed), (c) free up space on `/` first, (d) skip the full backup and
+rely on `--dry-run` review + readonly-mode discipline instead (see risk discussion below).
+
+### Decision so far: skip full backup, lean on `--dry-run` + readonly mode
+
+Confirmed the existing `GITLAB_BACKUP_SCHEDULE=daily` (sameersbn's built-in backup) does **not**
+cover this at all — it runs inside the `gitlab` container, which only has `gitlab-data:/home/git/data`
+and `certs-data:/certs` mounted; it has no filesystem access to `registry-data:/registry` at all.
+Zero protection from that mechanism for this operation.
+
+Given the local-backup space blocker, working approach agreed: **`--dry-run` first (free, makes zero
+changes, safe to run without readonly mode — no race possible since nothing is deleted), review the
+proposed deletions manually, then decide whether the real run's residual risk is acceptable** given
+readonly mode will be on during the real pass (eliminates the concurrent-push race, which is the
+main real failure mode of offline GC done correctly).
+
+### Procedure (from §4 Option C, restated with nexdos specifics)
+
+```bash
+# 1. (optional, blocked by disk space above — revisit if a remote/other-disk target is found)
+#    back up registry-data before the REAL (non-dry-run) pass
+
+# 2. dry run — safe now, no readonly mode needed
+docker exec registry registry garbage-collect --dry-run /etc/docker/registry/config.yml
+# (config.yml path = image's built-in default; REGISTRY_* env vars still merge on top for this command)
+
+# 3. before the REAL run only: enable readonly mode to block writes during the sweep
+#    add to registry service env: REGISTRY_STORAGE_MAINTENANCE_READONLY_ENABLED=true
+docker compose up -d registry
+
+# 4. real run
+docker exec registry registry garbage-collect /etc/docker/registry/config.yml
+# optional: --delete-untagged (more aggressive — also drops manifests with no tag; decide deliberately)
+
+# 5. turn readonly back off, docker compose up -d registry, verify docker login/pull round-trip
+```
+
+### Status: dry-run not yet executed / recorded as of this note.
+
+---
+
+## 7. Sources
 
 - [Document how to move from the Docker/Distribution registry to the GitLab container registry (#1557)](https://gitlab.com/gitlab-org/container-registry/-/issues/1557) — open request, no official doc yet; "drop-in" claim + storage-driver caveats.
 - [Deprecate: container registry support for storage Drivers OSS and Swift (#1141)](https://gitlab.com/gitlab-org/container-registry/-/issues/1141) — not applicable, nexdos uses filesystem storage.

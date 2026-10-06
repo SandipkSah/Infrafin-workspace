@@ -121,11 +121,13 @@ ENV UV_NATIVE_TLS=true
 ENV UV_SYSTEM_CERTS=true
 
 # NPM
+# [UPGRADE] was 20.19.3 (past its LTS end-of-life as of this bump) -> 24.20.0, current Active
+# LTS ("Krypton", supported through 2028-05-31). nvm v0.40.3 -> v0.40.8 while touching this.
 ENV NVM_DIR=/usr/local/.nvm
-ENV NODE_VERSION=20.19.3
+ENV NODE_VERSION=24.20.0
 RUN git clone https://github.com/nvm-sh/nvm.git $NVM_DIR \
     && cd $NVM_DIR \
-    && git checkout v0.40.3 \
+    && git checkout v0.40.8 \
     && source $NVM_DIR/nvm.sh \
     && nvm install $NODE_VERSION \
     && nvm alias default $NODE_VERSION \
@@ -149,19 +151,16 @@ RUN curl -fsSL https://herdr.dev/install.sh | sh
 RUN cp /root/.local/bin/claude /root/.local/bin/codex /root/.local/bin/herdr /usr/local/bin/
 
 # [UPGRADE] Pi (open-source coding agent CLI, earendil-works). Its installer runs
-# `npm install -g @earendil-works/pi-coding-agent` and needs Node >=22.19.0 -- this image
-# defaults to 20.19.3 for everything else (NVM_DIR above), so install an isolated Node 22 via
-# nvm just for this, without touching the default.
+# `npm install -g @earendil-works/pi-coding-agent` and needs Node >=22.19.0 -- the default
+# Node here is now 24.20.0 (bumped above), which already satisfies that, so no separate
+# isolated Node install is needed anymore (this used to require its own Node 22 via nvm, back
+# when the default was 20.19.3; simplified now that the default alone is new enough).
 #
-# Invoking node22's own npm binary directly, without --prefix, silently installed into
-# v20.19.3's directory instead of its own (confirmed: /usr/local/bin/pi ended up a dangling
-# symlink to a v22 path that was never populated; the real files landed under v20.19.3/bin/pi,
-# an older cached version). Root cause: an inherited npm prefix config (e.g. /root/.npmrc)
-# overriding per-version isolation. Fixed with an explicit --prefix, which overrides any
-# .npmrc setting.
-RUN source $NVM_DIR/nvm.sh && nvm install 22
-RUN NODE22_BIN="$(ls -d $NVM_DIR/versions/node/v22.*/bin | head -1)" && \
-    "$NODE22_BIN/npm" install -g --prefix /opt/pi-npm @earendil-works/pi-coding-agent && \
+# --prefix is still required though, for an unrelated reason found during testing: a plain
+# `npm install -g` (no --prefix) silently installed into the wrong location due to an
+# inherited npm prefix config (e.g. /root/.npmrc) overriding npm's normal per-install
+# location. --prefix overrides any .npmrc setting and forces the install where intended.
+RUN npm install -g --prefix /opt/pi-npm @earendil-works/pi-coding-agent && \
     ln -sf /opt/pi-npm/bin/pi /usr/local/bin/pi
 
 # [UPGRADE] Cursor's CLI. Its installer ships a whole app bundle, not a single binary: real

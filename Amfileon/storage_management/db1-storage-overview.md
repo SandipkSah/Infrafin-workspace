@@ -1,0 +1,292 @@
+# db1 `/data` Storage Overview
+
+As of 2026-10-02 · Sandip Sah
+
+> **Status:** analysis only. Nothing has been deleted or changed. Every action below is a **proposal**
+> for its owner to approve.
+
+## 1. At a glance
+
+| Metric | Value |
+| --- | --- |
+| Volume | `/dev/md0` mounted at `/data` |
+| Size / used / available | 7.0T / 6.4T / 200G |
+| Usage | **98%** |
+| Impact | ClickHouse `OPTIMIZE` stuck: merges need free space about the size of the parts they rewrite |
+| Accounted for | ~6.0 TB of 6.4 TB (the rest is rounding between tools) |
+| Freeable with low risk | **~1.8–1.9 TB** → usage drops to **~70%** |
+
+### Where the space goes
+
+| # | Consumer | Size | Share of used | Freeable (est.) | Section |
+| ---: | --- | ---: | ---: | ---: | --- |
+| 1 | ClickHouse prod | 1.8 TB | 28% | 90–120 GiB (+ up to ~580 GiB by team decision) | [§4](#4-clickhouse-prod-18-tb) |
+| 2 | GitLab container registry | 1.5 TB | 23% | ~1 TB+ | [§3](#3-gitlab-container-registry-15-tb) |
+| 3 | MinIO | 1.2 TiB | 21% | Pending | [§5](#5-minio-12-tib) |
+| 4 | Container logs | 702 GB | 11% | ~690 GB | [§2](#2-container-logs-702-gb) |
+| 5 | ClickHouse staging | 368 GB | 6% | up to 368 GB (team decision) | [§6](#6-clickhouse-staging-368-gb) |
+| 6 | Other named volumes | ~240 GB | 4% | up to ~250 GB | [§7](#7-other-docker-storage-430-gb) |
+| 7 | Images and container layers (`overlay2`) | 137 GB | 2% | ~18 GB | [§7](#7-other-docker-storage-430-gb) |
+| 8 | Anonymous volumes + runner caches | 46 GB | 1% | up to ~45 GB | [§7](#7-other-docker-storage-430-gb) |
+| 9 | Build cache, image metadata, outside Docker | ~6 GB | <1% | — | — |
+| | **Total** | **~6.0 TB** | | | |
+
+All data lives under `/data/docker-data-root` (Docker's data root). Outside it there's only ~4 GB.
+
+### Proposals by priority
+
+| Prio | Proposal | Frees (est.) | Risk | Decided by | Section |
+| ---: | --- | ---: | --- | --- | --- |
+| 1 | Truncate oversized container logs | ~690 GB | Low | Infra + container owners | [§2](#2-container-logs-702-gb) |
+| 2 | Add log rotation (compose + `daemon.json`) | Prevents regrowth | Low | Infra | [§2](#2-container-logs-702-gb) |
+| 3 | GitLab registry cleanup policies (RCs first, then keep newest 10) | ~1 TB+ | Low–medium | Image owners | [§3](#3-gitlab-container-registry-15-tb) |
+| 4 | ClickHouse system logs: drop old copies + add TTL | 90–120 GiB | Low | ClickHouse owner | [§4](#4-clickhouse-prod-18-tb) |
+| 5 | Retire `factor_model` v3/v4/v7 (+ base?) | 72–103 GiB | Medium | Data team | [§4](#4-clickhouse-prod-18-tb) |
+| 6 | MinIO lifecycle for old versions and delete markers | Pending | Medium | Bucket owners | [§5](#5-minio-12-tib) |
+| 7 | Retire `refinitiv_*` v6 / v3 generations | up to ~510 GiB | Team decision | Data team | [§4](#4-clickhouse-prod-18-tb) |
+| 8 | Drop ClickHouse staging if the staging ETL is undeployed | up to 368 GB | Team decision | Team | [§6](#6-clickhouse-staging-368-gb) |
+| 9 | Retention for Sentry, Uptime Kuma, Prometheus; check leftover volumes | up to ~250 GB | Low–medium | Volume owners | [§7](#7-other-docker-storage-430-gb) |
+| 10 | Move the `restic` cache to a volume | ~18 GB | Low | Infra | [§7](#7-other-docker-storage-430-gb) |
+| 11 | Fix Dockerfile layer caching in ETL images | Slows registry growth | Low | Data team | [§3](#3-gitlab-container-registry-15-tb) |
+
+---
+
+## 2. Container logs: 702 GB
+
+**Cause:** Docker's default `json-file` logger has no size limit. Every log below was still being written
+at 08:00 today.
+
+| Container ID | Container | Log size |
+| --- | --- | ---: |
+| `8aa4b454bc6f` | *pending* | **603 GB** |
+| `9cdd930ca600` | *pending* | 30 GB |
+| `d7b9d0e57218` | *pending* | 20 GB |
+| `fc63bb72e8a5` | `gitlab-ee` | 19 GB |
+| `1a1f7ef20bfc` | *pending* | 6.0 GB |
+| `2223f5bb0913` | *pending* | 4.6 GB |
+| `0454e25def3d` | *pending* | 4.4 GB |
+| `b8d16c8e1586` | *pending* | 2.9 GB |
+| `84aef30a566b` | *pending* | 2.2 GB |
+| `539ab944480f` | *pending* | 1.1 GB |
+| | **Total (top 10)** | **~693 GB** |
+
+| Proposal | Detail |
+| --- | --- |
+| Free space | `truncate -s 0 <log file>`. Safe with json-file and needs no restart. **Not `rm`**: Docker keeps the file open, so the space would only be freed on restart |
+| Prevent regrowth | Per service: `logging: {driver: json-file, options: {max-size: "100m", max-file: "3"}}`, plus the same default in `/etc/docker/daemon.json`. The default only applies to newly created containers |
+| Fix the cause | A 603 GB log usually means a repeating error or debug logging. The owner of `8aa4b454bc6f` should check its last lines |
+
+---
+
+## 3. GitLab container registry: 1.5 TB
+
+Full details are in the [registry report](db1-registry-storage-report.md).
+
+| Fact | Value |
+| --- | --- |
+| Repositories / tags | 71 / **4,651** |
+| Size in registry DB | 1,502 GB (matches disk, so there are no orphaned files) |
+| Online GC | Healthy and caught up (2 blob tasks, 0 manifest tasks) |
+| Cause | Nothing deletes old tags; each tag adds 0.5–0.9 GB of unique layers |
+| Tag scheme | CalVer releases (`2026.09.21`) plus many RCs (`2026.09.20rc1`…`rc9`) |
+| Timestamp caveat | Tags older than July 2026 all show `created_at = 2026-07-11` (the DB import date) |
+| Other GitLab data | artifacts 2 GB, packages 3.6 GB, git repos 15 GB, backups 57 MB |
+
+| Group | Repositories | Tags | Size* |
+| --- | ---: | ---: | ---: |
+| data | 48 | 3,427 | 1,443 GB |
+| trading | 8 | 850 | 141 GB |
+| dashboards | 3 | 338 | 71 GB |
+| infrastructure, it, research-tools, apis | 6 | 36 | 33 GB |
+
+\* Per-repository sizes include shared layers, so they add up to more than 1,502 GB.
+
+| Top repositories | Tags | Size |
+| --- | ---: | ---: |
+| data/snp_analyst_etl | 168 | 130 GB |
+| data/patronas_etl | 148 | 120 GB |
+| data/refinitiv_tick_etl | 133 | 115 GB |
+| data/locates_and_restricted_lists_etl | 138 | 84 GB |
+| trading/statarb2_calibration_etl | 170 | 78 GB |
+
+| Proposal | Detail |
+| --- | --- |
+| Phase 1 | Cleanup policy deleting `.*rc\d+`, keeping the newest 5, older than 7 days |
+| Phase 2 | Cleanup policy keeping the newest 10 per image plus `main\|prod\|stable\|release-.*` and pinned production versions, removing the rest older than 90 days (first deletions on 2026-10-09 because of the import date). Removes ~4,100 of 4,651 tags (89%). Step-by-step UI guide in the registry report |
+| Timing | Online GC frees the space 24–48 h after tags are deleted |
+| Don't | Run offline `registry-garbage-collect`: it deletes live data with the metadata DB |
+
+---
+
+## 4. ClickHouse prod: 1.8 TB
+
+Container `db1.production.ch.amf`. Sizes come from `system.parts`, and usage comes from `system.query_log`
+for the last 90 days. Query counts include inserts and tools, not only reads.
+
+### Databases
+
+| Database | Size | Last queried | Queries (90 d) | Assessment |
+| --- | ---: | --- | ---: | --- |
+| refinitiv_minute_bars_v7 | 551 GiB | 2026-10-02 | 134,644 | In use (current) |
+| refinitiv_minute_bars_v6 | 400 GiB | 2026-10-01 | 37,812 | In use. Retire once v7 replaces it? |
+| other_datasources | 153 GiB | 2026-10-02 | 68,927 | In use |
+| system | 114 GiB | — | — | ClickHouse's own logs, see below |
+| refinitiv_indicative_v4 | 96 GiB | 2026-10-02 | 107,094 | In use (current) |
+| refinitiv_indicative_v3 | 85 GiB | 2026-10-01 | 21,127 | In use. Retire once v4 replaces it? |
+| refinitiv_futures_data | 77 GiB | 2026-10-02 | 17,652 | In use |
+| factor_model_v9 | 39 GiB | 2026-09-30 | 82,790 | In use |
+| factor_model_v10 | 39 GiB | 2026-10-02 | 115,970 | In use (current) |
+| factor_model_v8 | 35 GiB | 2026-09-30 | 43,254 | In use |
+| factor_model | 31 GiB | 2026-09-30 | 10 | Barely used |
+| factor_model_v4 | 30 GiB | 2026-09-11 | 1 | **Likely unused** |
+| refinitiv_postclose_minute_bars_v7 | 27 GiB | 2026-10-02 | 21,361 | In use |
+| factor_model_v7 | 25 GiB | 2026-09-11 | 68 | **Likely unused** |
+| refinitiv_preopen_minute_bars_v6 | 23 GiB | 2026-10-01 | 25,407 | In use. Retire with v6? |
+| refinitiv_preopen_minute_bars_v7 | 20 GiB | 2026-10-02 | 86,278 | In use (current) |
+| factor_model_v3 | 18 GiB | 2026-09-11 | 1 | **Likely unused** |
+| identifiers | 10 GiB | 2026-10-02 | 861,312 | In use |
+| universes | 8 GiB | 2026-10-02 | 76,674 | In use |
+| 17 others | ~9 GiB total | | | Each < 2 GiB |
+
+| Observation | Meaning |
+| --- | --- |
+| v6 and v7 of `refinitiv_minute_bars` are both queried daily | Retiring v6 is a data-team decision, not a cleanup |
+| `factor_model_v3/v4/v7` last touched at the same second (2026-09-11 06:54:33) | Looks like one tool touching every database, not real use |
+| `*_vLee_ready*`, `*_vvOddLots*`, `*_10_2025`, v3–v5 databases appear in the query log but hold no data | They were apparently already dropped on 2026-08-13 |
+| `fundamental_data`, `_v7`, `_v8` not queried since July | Small (~0.75 GiB), but candidates |
+
+### `system` database: 114 GiB
+
+| Table group | Size | Data since | Note |
+| --- | ---: | --- | --- |
+| Old schema copies (`*_log_0`…`_10`, e.g. `trace_log_7`, `query_log_2`, `metric_log_6`) | ~32 GiB | Feb 2025 | Left behind by upgrades; nothing writes to them |
+| `query_log` | 30.5 GiB | Mar 2026 | No retention |
+| `trace_log` | 28.6 GiB | Apr 2026 | The query profiler is on |
+| `asynchronous_metric_log` | 10.2 GiB | Mar 2026 | No retention |
+| `part_log`, `metric_log`, `processors_profile_log`, others | ~13 GiB | Mar 2026 | No retention |
+
+### ClickHouse proposals
+
+| Proposal | Frees (est.) | Risk | Decided by |
+| --- | ---: | --- | --- |
+| Drop old `system.*_N` schema copies | ~32 GiB | Low | ClickHouse owner |
+| TTL: 90 days for `query_log`, 30 days for `trace_log` and the metric logs | ~60–90 GiB | Low | ClickHouse owner |
+| Turn down the query profiler if `trace_log` is unused | Slows regrowth | Low | ClickHouse owner |
+| Drop `factor_model_v3/v4/v7` (+ base) after confirmation | 72–103 GiB | Medium | Data team |
+| Retire `refinitiv_minute_bars_v6`, `indicative_v3`, `preopen_minute_bars_v6` | ~510 GiB | Team decision | Data team |
+
+---
+
+## 5. MinIO: 1.2 TiB
+
+Container `minio-s3-1` (version 2025-09-07, single drive, behind `sidekick` and `minio-nginx`).
+
+| Metric | Value |
+| --- | ---: |
+| Used | 1.2 TiB |
+| Buckets | 19 |
+| Objects | 7,420,937 |
+| Versions | 6,369,222 |
+| **Delete markers** | **2,002,642** |
+
+| Finding | Meaning |
+| --- | --- |
+| 2 million delete markers | Versioning is on for at least some buckets, and nothing expires old versions |
+| Deleted objects stay on disk | Part of the 1.2 TiB is likely data that applications consider deleted |
+| Per-bucket breakdown | *Pending* |
+
+| Proposal | Detail |
+| --- | --- |
+| Lifecycle rules | For buckets where versioning isn't needed for recovery, expire noncurrent versions after N days and remove expired delete markers. Bucket owners choose N |
+
+---
+
+## 6. ClickHouse staging: 368 GB
+
+| Fact | Value |
+| --- | --- |
+| Volume | `clickhouse-staging_data` |
+| Context | The team thread suggested undeploying the staging ETL |
+| Proposal | If undeployed, drop or shrink the volume (team decision) |
+
+---
+
+## 7. Other Docker storage: ~430 GB
+
+### Named volumes (~240 GB)
+
+| Volume | Size | Note | Proposal |
+| --- | ---: | --- | --- |
+| `sentry-postgres` | 90 GB | Sentry event store | Check that `sentry cleanup` runs with a retention period |
+| `clickhouse_data` | 69 GB | Not prod or staging | Owner to confirm whether it's still needed |
+| `uptime-kuma_uptime-kuma` | 27 GB | Heartbeat history | Lower retention in Uptime Kuma |
+| `clickhouse-external_data` | 22 GB | Extra ClickHouse volume | Owner to confirm whether it's still needed |
+| `sentry-kafka`, `sentry-clickhouse` | 12.6 GB | Part of Sentry | Covered by Sentry retention |
+| `dockprom_prometheus_data` | 7.8 GB | Metrics | Check Prometheus retention |
+| `gitlab-ee_gitlab-data` (hyphen) | 4.3 GB | Probably from an older GitLab setup | Confirm unused (live volume: `gitlab-ee_gitlab_data`) |
+| All others | < 1.1 GB each | Mongo, Postgres, Loki, Grafana, Authentik, Netbox, etc. | — |
+
+Also present but small: duplicate samba-share volumes (`_samba_share` / `_sambashare` / hyphenated variants)
+and old GitLab volumes (`gitlab-ee_registry-data`, `postgresql-data(-ee)`, `redis-data(-ee)`).
+
+### Anonymous, runner and dangling volumes (~46 GB)
+
+| Group | Count | Size | Note |
+| --- | ---: | ---: | --- |
+| Anonymous volumes | 188 | 43 GB | Mostly `3951ee25…` (17 GB) and `be446e69…` (16 GB) |
+| GitLab Runner caches | 638 | 3.1 GB | Not an issue |
+| Dangling (not used by any container) | 908 | (part of the above) | Prune after checking owners and contents |
+
+### Images and container layers (137 GB)
+
+| Container | Writable layer | Note |
+| --- | ---: | --- |
+| `restic` | **17.7 GB** | Writes its cache inside the container; should be on a volume |
+| `db1.production.ch.amf` | 1.2 GB | Minor |
+| `nginx-lb-healthcheck-1` | 549 MB | Minor |
+
+---
+
+## 8. Side findings
+
+| Finding | Risk | Proposal |
+| --- | --- | --- |
+| `gitlab-ee` runs **gitlab-ce 19.4.0** from an untagged image; `gitlab/gitlab-ce:latest` is also present | A recreate could upgrade GitLab and run registry DB migrations without warning | Pin `gitlab/gitlab-ce:19.4.0-ce.0` in compose |
+| 7.0T − 6.4T = 600G, but only 200G is available | If ext4, ~350 GiB is the 5% root reserve | Check `df -hT /data` and `tune2fs -l /dev/md0` |
+
+---
+
+## 9. Pending measurements
+
+All of these are collected by [`collect_pending.sh`](collect_pending.sh) (read-only).
+
+| # | Item | Fills in |
+| ---: | --- | --- |
+| 1 | Container names and log settings behind the large logs | §2 table |
+| 2 | Last lines of the 603 GB log | §2 cause |
+| 3 | MinIO per-bucket size, versions, delete markers, lifecycle rules | §5 |
+| 4 | ClickHouse reads vs. inserts vs. tools on the old-version databases | §4 assessments |
+| 5 | Largest tables in `minute_bars_v7` and running merges | §1 impact (`OPTIMIZE`) |
+| 6 | Existing GitLab cleanup policies, compose image line, images running on db1 | §3, §8 |
+| 7 | Owners of `clickhouse_data`, the external ClickHouse volumes, and the large anonymous volumes | §7 |
+| 8 | Fill rate (GB/day) from Prometheus | §1 |
+| 9 | Filesystem type, inodes, reserved blocks | §8 |
+
+---
+
+## Appendix: commands used
+
+All read-only, run on db1 as root.
+
+| Area | Command |
+| --- | --- |
+| Filesystem | `df -h /data` · `du -xsh /data/*` |
+| Docker layout | `du -sh /data/docker-data-root/{containers,image,buildkit,overlay2}` |
+| Container logs | `ls -lhS /data/docker-data-root/containers/*/*-json.log \| head -10` |
+| Writable layers | `docker ps -as --format '{{.Size}}\t{{.Names}}' \| sort -h \| tail -10` |
+| Volumes | `du -sh <volume>` in `/data/docker-data-root/volumes` · `docker volume ls -qf dangling=true \| wc -l` |
+| GitLab | `docker exec gitlab-ee du -sh /var/opt/gitlab/gitlab-rails/shared/*` · `gitlab-ctl registry-database gc-stats` |
+| Registry DB | `gitlab-psql -d registry -c "select count(*), pg_size_pretty(sum(size)) from blobs;"` |
+| ClickHouse sizes | `SELECT database, formatReadableSize(sum(bytes_on_disk)) FROM system.parts WHERE active GROUP BY database` |
+| ClickHouse usage | `SELECT arrayJoin(databases) db, max(event_time), count() FROM system.query_log WHERE type='QueryFinish' AND event_date >= today()-90 GROUP BY db` |
+| MinIO | `docker exec minio-s3-1 sh -c 'export MC_HOST_local="http://$MINIO_ROOT_USER:$MINIO_ROOT_PASSWORD@localhost:9000"; mc admin info local'` |
