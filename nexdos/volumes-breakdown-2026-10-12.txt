@@ -1,0 +1,33 @@
+sudo du -h --max-depth=1 /var/lib/docker/volumes/*/_data | sort -rh
+(top entries only — see conversation for full raw paste if needed)
+
+979G    /var/lib/docker/volumes/gitlab_registry-data/_data
+540G    /var/lib/docker/volumes/jupyterhub-shared/_data
+324G    /var/lib/docker/volumes/postgres/_data                 <- standalone, NOT gitlab's postgres
+28G     /var/lib/docker/volumes/84dec5719aac.../_data           <- anonymous, looks like orphaned sameersbn-style gitlab data
+27G     /var/lib/docker/volumes/49b02eea0052.../_data           <- same pattern
+26G     /var/lib/docker/volumes/jupyterhub-cf_research/_data
+19G     /var/lib/docker/volumes/gitlab_gitlab-data/_data        <- REAL nexdos gitlab repos/backups/uploads (16G of it is backups, only 1.2G actual repos)
+14G     /var/lib/docker/volumes/uptime-kuma_uptime-kuma/_data
+14G     /var/lib/docker/volumes/sentry-postgres/_data
+6.0G    /var/lib/docker/volumes/mongo/_data
+5.1G    /var/lib/docker/volumes/dockprom_prometheus_data/_data
+5.0G    /var/lib/docker/volumes/jupyterhub-pe_research/_data
+4.2G    /var/lib/docker/volumes/runner-...-cache-.../_data      <- GitLab CI runner cache
+3.4G    /var/lib/docker/volumes/4507965d4df1.../_data           <- same orphaned-gitlab pattern
+3.0G    /var/lib/docker/volumes/gitlab_postgresql-data/_data    <- REAL nexdos gitlab rails DB
+1.9G    /var/lib/docker/volumes/3aa367545321.../_data           <- same orphaned-gitlab pattern
+1.2G    /var/lib/docker/volumes/d5f5dbd0a80d.../_data           <- same orphaned-gitlab pattern
+1.2G    /var/lib/docker/volumes/45781704509c.../_data           <- same orphaned-gitlab pattern
+5.1M    /var/lib/docker/volumes/gitlab_redis-data/_data
+24K     /var/lib/docker/volumes/gitlab_certs-data/_data
+
+Other services present on host (smaller, <2G each): Sentry (clickhouse, kafka, redis),
+SuiteCRM, WordPress, LDAP (multiple instances), proxy/acme (Let's Encrypt companion),
+Grafana, mongo (jupyter's own), shhh, watchtower.
+
+Orphaned-looking anonymous "gitlab-style" volumes (hash names, internal layout matches
+sameersbn's /home/git/data: gitlab/, nginx/, supervisor/ subdirs) total ≈ 63GB:
+  84dec5719aac (28G) + 49b02eea0052 (27G) + 4507965d4df1 (3.4G) + 3aa367545321 (1.9G)
+  + d5f5dbd0a80d (1.2G) + 45781704509c (1.2G) + a few sub-MB ones
+Not yet confirmed whether these are attached to any running container or truly dangling.

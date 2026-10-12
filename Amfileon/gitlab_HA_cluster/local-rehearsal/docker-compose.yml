@@ -1,0 +1,111 @@
+# Local rehearsal of active/passive GitLab (db1 active, db2 standby).
+# "Server" = a GitLab container + its own volumes. See ../README.md for the real design.
+#
+#   backend 10.77.0.0/24 : pg (Patroni stand-in, .18), etcd (.13), gitlab-db1 (.20), gitlab-db2 (.21), hasync
+#   front   10.78.0.0/24 : client + whichever GitLab holds the gitlab.local-test.amf / registry.local-test.amf alias
+#                           (stand-in for the GitLab floating IP / DNS record)
+name: gitlab-ha-rehearsal
+
+x-gitlab: &gitlab
+  image: gitlab/gitlab-ce:19.4.0-ce.0
+  restart: always
+  hostname: gitlab.local-test.amf
+  entrypoint: ["/ha/guard.sh"]
+  shm_size: 256m
+  depends_on: [pg, etcd]
+
+x-gitlab-env: &gitlab-env
+  GITLAB_OMNIBUS_CONFIG: "from_file '/ha/gitlab.rb'"
+  HA_ETCD: http://etcd:2379
+  PG_HOST: 10.77.0.18
+  GITLAB_ROOT_PASSWORD: ${GITLAB_ROOT_PASSWORD}
+  GITLAB_DB_PASSWORD: ${GITLAB_DB_PASSWORD}
+  REGISTRY_DB_PASSWORD: ${REGISTRY_DB_PASSWORD}
+  DB_KEY_BASE: ${DB_KEY_BASE}
+  SECRET_KEY_BASE: ${SECRET_KEY_BASE}
+  OTP_KEY_BASE: ${OTP_KEY_BASE}
+
+services:
+  pg:
+    image: postgres:17
+    # GitLab's schema load needs > 64 locks/transaction (default 64 fails with "out of shared memory").
+    # The production Patroni config must set this too.
+    command: ["postgres", "-c", "max_locks_per_transaction=128", "-c", "max_connections=300"]
+    environment:
+      POSTGRES_PASSWORD: ${PG_SUPERUSER_PASSWORD}
+      GITLAB_DB_PASSWORD: ${GITLAB_DB_PASSWORD}
+      REGISTRY_DB_PASSWORD: ${REGISTRY_DB_PASSWORD}
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+      - ./pg-init:/docker-entrypoint-initdb.d:ro
+    networks:
+      backend: { ipv4_address: 10.77.0.18 }
+
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.21
+    command:
+      - etcd
+      - --name=etcd
+      - --data-dir=/etcd-data
+      - --listen-client-urls=http://0.0.0.0:2379
+      - --advertise-client-urls=http://etcd:2379
+    volumes: [etcd_data:/etcd-data]
+    networks:
+      backend: { ipv4_address: 10.77.0.13 }
+
+  gitlab-db1:
+    <<: *gitlab
+    container_name: gitlab-db1
+    environment: { <<: *gitlab-env, HA_NODE: db1 }
+    volumes:
+      - ./ha:/ha:ro
+      - db1_config:/etc/gitlab
+      - db1_data:/var/opt/gitlab
+    networks:
+      backend: { ipv4_address: 10.77.0.20 }
+      front: { aliases: [gitlab.local-test.amf, registry.local-test.amf] }
+
+  gitlab-db2:
+    <<: *gitlab
+    container_name: gitlab-db2
+    environment: { <<: *gitlab-env, HA_NODE: db2 }
+    volumes:
+      - ./ha:/ha:ro
+      - db2_config:/etc/gitlab
+      - db2_data:/var/opt/gitlab
+    networks:
+      backend: { ipv4_address: 10.77.0.21 }
+      front: {}
+
+  hasync:
+    build: ./hasync
+    container_name: hasync
+    environment:
+      HA_ETCD: http://etcd:2379
+      SWEEP_INTERVAL: ${SWEEP_INTERVAL:-300}
+    volumes:
+      - db1_config:/n/db1/config
+      - db1_data:/n/db1/data
+      - db2_config:/n/db2/config
+      - db2_data:/n/db2/data
+    networks: [backend]
+
+  client:
+    build: ./client
+    container_name: client
+    networks: [front]
+
+volumes:
+  pg_data:
+  etcd_data:
+  db1_config:
+  db1_data:
+  db2_config:
+  db2_data:
+
+networks:
+  backend:
+    ipam: { config: [{ subnet: 10.77.0.0/24 }] }
+  front:
+    name: amf-front
+    ipam: { config: [{ subnet: 10.78.0.0/24 }] }

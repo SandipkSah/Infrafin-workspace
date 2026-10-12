@@ -1,0 +1,267 @@
+# Local rehearsal of the dockprom HA design (see ../README.md).
+#
+# Each "host" is a tiny base container with a fixed IP on the `lan` network. Every service that
+# would run on that host joins the base container's network namespace (network_mode: service:<host>),
+# so — exactly like on a real server — they share one IP, reach each other on 127.0.0.1, and
+# keepalived can move a floating IP onto that host's eth0.
+#
+#   node-a   172.31.10.20  stands in for db1   (monitor node, priority 150)
+#   node-b   172.31.10.21  stands in for db2   (monitor node, priority 100)
+#   target-1 172.31.10.13  stands in for prod3 (exporters only)
+#   target-2 172.31.10.30  stands in for cpu1  (exporters only)
+#   target-3 172.31.10.31  stands in for gpu1  (exporters only)
+#   VIP      172.31.10.100 Grafana floating IP (keepalived)
+#
+# From the Mac: node-a Grafana http://localhost:13000, node-b Grafana http://localhost:23000,
+# node-a Thanos Query http://localhost:13904 (admin / rehearsal). The VIP is only reachable from
+# inside the `lan` network, e.g. `docker compose exec client curl http://172.31.10.100:3000/api/health`.
+
+name: amf-mon-rehearsal
+
+networks:
+  lan:
+    ipam:
+      config:
+        - subnet: 172.31.10.0/24
+
+volumes:
+  node_a_prometheus_data: {}
+  node_b_prometheus_data: {}
+
+x-host: &host
+  image: alpine:3.22
+  command: ["sleep", "infinity"]
+  init: true
+  restart: unless-stopped
+
+x-nodeexporter: &nodeexporter
+  image: prom/node-exporter:v1.10.2
+  volumes:
+    - /proc:/host/proc:ro
+    - /sys:/host/sys:ro
+    - /:/rootfs:ro
+  command:
+    - '--path.procfs=/host/proc'
+    - '--path.rootfs=/rootfs'
+    - '--path.sysfs=/host/sys'
+    - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)'
+  restart: unless-stopped
+
+x-cadvisor: &cadvisor
+  image: gcr.io/cadvisor/cadvisor:v0.55.1
+  privileged: true
+  devices:
+    - /dev/kmsg:/dev/kmsg
+  volumes:
+    - /:/rootfs:ro
+    - /var/run:/var/run:ro
+    - /sys:/sys:ro
+    - /var/lib/docker:/var/lib/docker:ro
+  command:
+    - '--housekeeping_interval=10s'
+    - '--docker_only=true'
+  restart: unless-stopped
+
+x-prometheus: &prometheus
+  image: prom/prometheus:v3.10.0
+  command:
+    - '--config.file=/etc/prometheus/prometheus.yml'
+    - '--storage.tsdb.path=/prometheus'
+    - '--storage.tsdb.retention.time=200h'
+    - '--storage.tsdb.min-block-duration=2h'   # required by the Thanos sidecar
+    - '--storage.tsdb.max-block-duration=2h'
+    - '--web.enable-lifecycle'
+  restart: unless-stopped
+
+x-thanos-sidecar: &thanos-sidecar
+  image: quay.io/thanos/thanos:v0.42.4
+  command:
+    - sidecar
+    - --tsdb.path=/prometheus
+    - --prometheus.url=http://127.0.0.1:9090
+    - --grpc-address=0.0.0.0:10901
+    - --http-address=0.0.0.0:10902
+  restart: unless-stopped
+
+x-thanos-query: &thanos-query
+  image: quay.io/thanos/thanos:v0.42.4
+  command:
+    - query
+    - --http-address=0.0.0.0:10904
+    - --grpc-address=0.0.0.0:10903
+    - --endpoint=172.31.10.20:10901
+    - --endpoint=172.31.10.21:10901
+    - --query.replica-label=replica
+  restart: unless-stopped
+
+x-alertmanager: &alertmanager
+  image: prom/alertmanager:v0.31.1
+  volumes:
+    - ./alertmanager:/etc/alertmanager:ro
+  restart: unless-stopped
+
+x-grafana: &grafana
+  image: grafana/grafana:12.4.0
+  volumes:
+    - ./grafana/provisioning:/etc/grafana/provisioning:ro
+  environment:
+    GF_SERVER_ROOT_URL: http://172.31.10.100:3000/
+    GF_UNIFIED_ALERTING_ENABLED: "false"
+    GF_SECURITY_ADMIN_USER: admin
+    GF_SECURITY_ADMIN_PASSWORD: rehearsal
+    GF_USERS_ALLOW_SIGN_UP: "false"
+  restart: unless-stopped
+
+x-keepalived: &keepalived
+  build: ./tools
+  image: amf-mon-rehearsal-tools
+  cap_add: [NET_ADMIN, NET_BROADCAST, NET_RAW]
+  tmpfs: [/run]   # keepalived refuses to start if a pid file survives a restart ("daemon is already running")
+  command: ["keepalived", "--dont-fork", "--log-console", "-f", "/etc/keepalived/keepalived.conf"]
+  restart: unless-stopped
+
+services:
+
+  # ─────────────────────────── node-a (db1) ───────────────────────────
+  node-a:
+    <<: *host
+    hostname: node-a
+    networks:
+      lan: { ipv4_address: 172.31.10.20 }
+    ports:
+      - "13000:3000"     # Grafana
+      - "13904:10904"    # Thanos Query
+
+  node-a-nodeexporter: { <<: *nodeexporter, network_mode: "service:node-a", depends_on: [node-a] }
+  node-a-cadvisor:     { <<: *cadvisor,     network_mode: "service:node-a", depends_on: [node-a] }
+
+  node-a-prometheus:
+    <<: *prometheus
+    network_mode: "service:node-a"
+    depends_on: [node-a]
+    environment: { REPLICA: node-a }
+    volumes:
+      - ./prometheus:/etc/prometheus:ro
+      - node_a_prometheus_data:/prometheus
+
+  node-a-thanos-sidecar:
+    <<: *thanos-sidecar
+    network_mode: "service:node-a"
+    depends_on: [node-a, node-a-prometheus]
+    volumes: [node_a_prometheus_data:/prometheus]
+
+  node-a-thanos-query: { <<: *thanos-query, network_mode: "service:node-a", depends_on: [node-a] }
+
+  node-a-alertmanager:
+    <<: *alertmanager
+    network_mode: "service:node-a"
+    depends_on: [node-a]
+    command:
+      - '--config.file=/etc/alertmanager/config.yml'
+      - '--storage.path=/alertmanager'
+      - '--cluster.listen-address=0.0.0.0:9094'
+      - '--cluster.peer=172.31.10.21:9094'
+
+  node-a-grafana: { <<: *grafana, network_mode: "service:node-a", depends_on: [node-a] }
+
+  node-a-keepalived:
+    <<: *keepalived
+    network_mode: "service:node-a"
+    depends_on: [node-a]
+    volumes: [./keepalived/node-a.conf:/etc/keepalived/keepalived.conf:ro]
+
+  node-a-pushgateway:   # single instance by design (see README "Known limitations")
+    image: prom/pushgateway:v1.11.2
+    network_mode: "service:node-a"
+    depends_on: [node-a]
+    restart: unless-stopped
+
+  # ─────────────────────────── node-b (db2) ───────────────────────────
+  node-b:
+    <<: *host
+    hostname: node-b
+    networks:
+      lan: { ipv4_address: 172.31.10.21 }
+    ports:
+      - "23000:3000"     # Grafana
+
+  node-b-nodeexporter: { <<: *nodeexporter, network_mode: "service:node-b", depends_on: [node-b] }
+  node-b-cadvisor:     { <<: *cadvisor,     network_mode: "service:node-b", depends_on: [node-b] }
+
+  node-b-prometheus:
+    <<: *prometheus
+    network_mode: "service:node-b"
+    depends_on: [node-b]
+    environment: { REPLICA: node-b }
+    volumes:
+      - ./prometheus:/etc/prometheus:ro
+      - node_b_prometheus_data:/prometheus
+
+  node-b-thanos-sidecar:
+    <<: *thanos-sidecar
+    network_mode: "service:node-b"
+    depends_on: [node-b, node-b-prometheus]
+    volumes: [node_b_prometheus_data:/prometheus]
+
+  node-b-thanos-query: { <<: *thanos-query, network_mode: "service:node-b", depends_on: [node-b] }
+
+  node-b-alertmanager:
+    <<: *alertmanager
+    network_mode: "service:node-b"
+    depends_on: [node-b]
+    command:
+      - '--config.file=/etc/alertmanager/config.yml'
+      - '--storage.path=/alertmanager'
+      - '--cluster.listen-address=0.0.0.0:9094'
+      - '--cluster.peer=172.31.10.20:9094'
+
+  node-b-grafana: { <<: *grafana, network_mode: "service:node-b", depends_on: [node-b] }
+
+  node-b-keepalived:
+    <<: *keepalived
+    network_mode: "service:node-b"
+    depends_on: [node-b]
+    volumes: [./keepalived/node-b.conf:/etc/keepalived/keepalived.conf:ro]
+
+  # ──────────────────── exporter-only hosts (prod3, cpu1, gpu1) ────────────────────
+  target-1:
+    <<: *host
+    hostname: target-1
+    networks:
+      lan: { ipv4_address: 172.31.10.13 }
+  target-1-nodeexporter: { <<: *nodeexporter, network_mode: "service:target-1", depends_on: [target-1] }
+  target-1-cadvisor:     { <<: *cadvisor,     network_mode: "service:target-1", depends_on: [target-1] }
+
+  target-2:
+    <<: *host
+    hostname: target-2
+    networks:
+      lan: { ipv4_address: 172.31.10.30 }
+  target-2-nodeexporter: { <<: *nodeexporter, network_mode: "service:target-2", depends_on: [target-2] }
+  target-2-cadvisor:     { <<: *cadvisor,     network_mode: "service:target-2", depends_on: [target-2] }
+
+  target-3:
+    <<: *host
+    hostname: target-3
+    networks:
+      lan: { ipv4_address: 172.31.10.31 }
+  target-3-nodeexporter: { <<: *nodeexporter, network_mode: "service:target-3", depends_on: [target-3] }
+  target-3-cadvisor:     { <<: *cadvisor,     network_mode: "service:target-3", depends_on: [target-3] }
+
+  # ─────────────────────────── test helpers ───────────────────────────
+  webhook-sink:   # stands in for Slack/email: records every notification Alertmanager sends
+    image: python:3.13-alpine
+    command: ["python", "-u", "/sink.py"]
+    volumes: [./webhook-sink/sink.py:/sink.py:ro]
+    networks:
+      lan: { ipv4_address: 172.31.10.40 }
+    restart: unless-stopped
+
+  client:         # a "user's machine" on the LAN; the test script runs curl from here
+    image: amf-mon-rehearsal-tools
+    build: ./tools
+    command: ["sleep", "infinity"]
+    init: true
+    networks:
+      lan: { ipv4_address: 172.31.10.50 }
+    restart: unless-stopped

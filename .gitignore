@@ -69,3 +69,6 @@ logs/
 # Archives (build/output artifacts, not source)
 *.zip
 *.tar.gz
+
+# Nested repos (own remotes on git.infrafin.net)
+sdlc/

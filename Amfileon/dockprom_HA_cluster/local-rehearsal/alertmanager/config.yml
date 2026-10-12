@@ -1,0 +1,14 @@
+# Same on both nodes. The webhook-sink stands in for Slack; on the real hosts this is dockprom's
+# slack receiver unchanged.
+route:
+  receiver: 'sink'
+  group_by: ['alertname', 'instance']
+  group_wait: 5s
+  group_interval: 10s
+  repeat_interval: 4h   # long, so each test alert is counted exactly once
+
+receivers:
+  - name: 'sink'
+    webhook_configs:
+      - url: 'http://172.31.10.40:5001/'
+        send_resolved: false

@@ -1,0 +1,12 @@
+apiVersion: 1
+
+datasources:
+  - name: Prometheus          # same name as dockprom, so its dashboards work unchanged
+    uid: thanos
+    type: prometheus
+    access: proxy
+    orgId: 1
+    url: http://127.0.0.1:10904   # this node's Thanos Query, not a single Prometheus
+    basicAuth: false
+    isDefault: true
+    editable: false

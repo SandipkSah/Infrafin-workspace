@@ -1,0 +1,13 @@
+#!/bin/sh
+# Global Gitaly post-receive hook: queue the pushed repo for immediate sync to the standby.
+# Must never fail a push, so every error is ignored.
+cat >/dev/null
+q=/var/opt/gitlab/ha-sync-queue
+base=/var/opt/gitlab/git-data/repositories/
+case "$PWD" in
+  "$base"*) rel=${PWD#"$base"} ;;
+  *)        rel=ALL ;;
+esac
+tmp="$q/.tmp.$$"
+printf '%s\n' "$rel" > "$tmp" 2>/dev/null && mv "$tmp" "$q/$(date +%s%N).$$" 2>/dev/null
+exit 0
