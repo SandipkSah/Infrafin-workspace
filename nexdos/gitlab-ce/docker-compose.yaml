@@ -1,0 +1,131 @@
+# nexdos GitLab on Omnibus gitlab-ce - the replacement for sameersbn/gitlab + registry:2.
+# Runs side-by-side with the old instance on the same host until cutover; populated from
+# a production backup by clone-from-prod.sh (see ../migration-rehearsal/ for rehearsals).
+#
+# Own named volumes for everything (incl. the registry) - nothing here touches the old
+# instance. The registry starts on empty storage, so it comes up in metadata-database mode;
+# copied-in data then needs the one-time `gitlab-ctl registry-database import` the clone
+# script runs.
+#
+# While it's a test copy: outgoing email is disabled and SANITIZE=true in .env. At cutover,
+# switch .env to the production hostnames/SSH port and enable SMTP.
+#
+# All values come from .env (copy .env.example). Don't rename the project (`name:`) or the
+# registry volume afterwards - the data volumes are named after them.
+
+name: gitlab-ce
+
+services:
+  gitlab:
+    restart: unless-stopped
+    image: gitlab/gitlab-ce:${GITLAB_CE_VERSION}
+    container_name: ${GITLAB_CONTAINER_NAME}
+    hostname: ${GITLAB_HOST}
+    shm_size: "256m"
+    ports:
+      # HTTP/HTTPS go through nginx-proxy on proxy_network, only SSH is published.
+      - "${GITLAB_SSH_PORT}:22"
+    volumes:
+      - config:/etc/gitlab
+      - logs:/var/log/gitlab
+      - data:/var/opt/gitlab
+      - ${BACKUP_DIR}:/var/opt/gitlab/backups
+      - registry:/var/opt/gitlab/gitlab-rails/shared/registry
+    networks:
+      - proxy
+      - ldap
+    # Omnibus' own healthcheck, plus an optional ping to the external monitor (healthchecks)
+    # like the old instance had. HC_PING_URL stays empty on the test copy - pinging prod's
+    # check from here would hide a real outage. Set it at cutover.
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/gitlab/bin/healthcheck && { [ -z \"$$HC_PING_URL\" ] || curl -fsS -m 10 --retry 5 -o /dev/null \"$$HC_PING_URL\"; }"]
+      interval: 1m
+      timeout: 30s
+      retries: 3
+      start_period: 5m
+    environment:
+      HC_PING_URL: ${HC_PING_URL:-}
+      VIRTUAL_HOST: ${GITLAB_HOST},${GITLAB_REGISTRY_HOST}
+      VIRTUAL_PORT: "80"
+      LETSENCRYPT_HOST: ${GITLAB_HOST},${GITLAB_REGISTRY_HOST}
+      LETSENCRYPT_EMAIL: ${LETSENCRYPT_EMAIL}
+      GITLAB_OMNIBUS_CONFIG: |
+        external_url 'https://${GITLAB_HOST}'
+        gitlab_rails['gitlab_shell_ssh_port'] = ${GITLAB_SSH_PORT}
+        gitlab_rails['time_zone'] = '${GITLAB_TIME_ZONE}'
+
+        # TLS terminates at nginx-proxy; both vhosts listen on plain :80 inside the container
+        # and are told the original request was https.
+        nginx['listen_port'] = 80
+        nginx['listen_https'] = false
+        nginx['proxy_set_headers'] = { 'X-Forwarded-Proto' => 'https', 'X-Forwarded-Ssl' => 'on' }
+
+        registry_external_url 'https://${GITLAB_REGISTRY_HOST}'
+        registry['enable'] = true
+        registry_nginx['listen_port'] = 80
+        registry_nginx['listen_https'] = false
+        registry_nginx['proxy_set_headers'] = { 'X-Forwarded-Proto' => 'https', 'X-Forwarded-Ssl' => 'on' }
+        gitlab_rails['registry_path'] = '/var/opt/gitlab/gitlab-rails/shared/registry'
+
+        # Server key must stay 'main': sameersbn stores LDAP identities as provider
+        # 'ldapmain', and Omnibus derives the provider name as 'ldap' + key.
+        gitlab_rails['ldap_enabled'] = true
+        gitlab_rails['ldap_servers'] = {
+          'main' => {
+            'label' => '${LDAP_LABEL}',
+            'host' => '${LDAP_HOST}',
+            'port' => ${LDAP_PORT},
+            'uid' => '${LDAP_UID}',
+            'encryption' => '${LDAP_ENCRYPTION}',
+            'verify_certificates' => ${LDAP_VERIFY_CERTIFICATES},
+            'bind_dn' => '${LDAP_BIND_DN}',
+            'password' => '${LDAP_BIND_PASSWORD}',
+            'active_directory' => false,
+            'allow_username_or_email_login' => false,
+            'base' => '${LDAP_BASE}',
+            'user_filter' => '${LDAP_USER_FILTER}',
+            'attributes' => {
+              'username' => ['${LDAP_ATTRIBUTE_USERNAME}'],
+              'email' => ['${LDAP_ATTRIBUTE_MAIL}']
+            }
+          }
+        }
+
+        # EMAIL_ENABLED=false while this is a test copy - it must never email real users.
+        # Set it to true at cutover; the SMTP values are filled from prod by import-prod-env.sh.
+        gitlab_rails['gitlab_email_enabled'] = ${EMAIL_ENABLED:-false}
+        gitlab_rails['smtp_enable'] = ${EMAIL_ENABLED:-false}
+        gitlab_rails['smtp_address'] = '${SMTP_ADDRESS:-}'
+        gitlab_rails['smtp_port'] = ${SMTP_PORT:-587}
+        gitlab_rails['smtp_user_name'] = '${SMTP_USER_NAME:-}'
+        gitlab_rails['smtp_password'] = '${SMTP_PASSWORD:-}'
+        gitlab_rails['smtp_domain'] = '${SMTP_DOMAIN:-}'
+        gitlab_rails['smtp_authentication'] = '${SMTP_AUTHENTICATION:-login}'
+        gitlab_rails['smtp_enable_starttls_auto'] = ${SMTP_ENABLE_STARTTLS_AUTO:-true}
+        gitlab_rails['gitlab_email_from'] = '${GITLAB_EMAIL_FROM:-}'
+        gitlab_rails['gitlab_email_reply_to'] = '${GITLAB_EMAIL_REPLY_TO:-}'
+        gitlab_rails['incoming_email_enabled'] = false
+
+        # Nightly backups come from backup.sh via host cron (Omnibus has no built-in schedule).
+        # This only controls how long gitlab-backup keeps old tarballs in ./backups.
+        gitlab_rails['backup_keep_time'] = ${BACKUP_KEEP_TIME:-604800}
+
+        puma['worker_processes'] = ${PUMA_WORKER_PROCESSES}
+        sidekiq['concurrency'] = ${SIDEKIQ_CONCURRENCY}
+        prometheus_monitoring['enable'] = false
+
+volumes:
+  config:
+  logs:
+  data:
+  # Fixed name so clone-from-prod.sh can copy into it directly.
+  registry:
+    name: gitlab-ce-registry
+
+networks:
+  proxy:
+    external: true
+    name: ${PROXY_NETWORK}
+  ldap:
+    external: true
+    name: ${LDAP_NETWORK}

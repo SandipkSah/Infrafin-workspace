@@ -9,16 +9,20 @@ gpu1 for reference and history — edit there and copy back here, not the other 
 
 ## Where things stand
 
-- Live prod image: `amfileon/conda`, built from `/srv/docker/conda/Dockerfile` — **untouched**
-  the whole time. Every other `conda-*` container keeps running on it.
+- Live prod image: `amfileon/conda`, built from `/srv/docker/conda/Dockerfile`. As of
+  **`v1.1.1`**, prod now tracks `Dockerfile.ssa-test-v2`'s content — the long "untouched
+  baseline" period is over; see **Versioning & registry** below for the full tag history.
 - Test container: `conda-ssa`, swapped via `docker-compose.ssa-test.yaml` (see below) onto
-  a throwaway tag. Only `conda-ssa` is ever affected. **Currently running
-  `amfileon/conda:ssa-test-v2`** — the current candidate.
+  a throwaway tag. Only `conda-ssa` is ever affected. Used to validate every version bump
+  (most recently `v1.1.1`, confirmed with herdr `0.9.5`) before it gets tagged/pushed.
 - Three Dockerfile variants explored, in order — `ssa-test` (conservative base upgrade) →
   `ssa-test-max` (aggressive, "upgrade everything") → `ssa-test-v2` (built from `-max`,
   incorporating real feedback from a teammate who independently tested `-max` on gpu1 and
   from a second teammate's tool requests). **`v2` is the current recommendation** — it fixes
   everything `-max` had open and adds five more CLI tools the team asked for.
+- Source is now tracked in GitLab: **`infrastructure/conda-image`** on `gitlab.amf` has the
+  current `Dockerfile` + a release README committed (`main` branch) — see **Source control**
+  below. It was an empty project before this.
 
 ## A note on how these Dockerfiles are written
 

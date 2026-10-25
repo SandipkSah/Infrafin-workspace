@@ -36,6 +36,15 @@ services:
     - gitlab-data:/home/git/data:Z
     - certs-data:/certs
     - ./sockets:/var/opt/gitlab/gitlab-kas/sockets/
+    # Fix for container registry cleanup policy failures: GitLab's tag-expiration worker opens
+    # one short-lived connection per tag (manifest/blob fetch + delete) against the registry
+    # container. On repos with hundreds of tags, this exhausted the local ephemeral port range
+    # (TIME_WAIT sockets piled up faster than they could drain), causing Faraday::ConnectionFailed
+    # / EADDRNOTAVAIL and leaving cleanup policies permanently stuck in cleanup_unfinished.
+    # tcp_tw_reuse lets the kernel reuse TIME_WAIT sockets for new outbound connections instead.
+    # Diagnosed 2026-10-13, see nexdos-registry-notes.md.
+    sysctls:
+    - net.ipv4.tcp_tw_reuse=1
     networks:
     - default
     - ldap
@@ -132,7 +141,7 @@ services:
     - IMAP_HOST=imap.gmail.com
     - IMAP_PORT=993
     - IMAP_USER=mailer@example.com
-    - IMAP_PASS=password
+    - IMAP_PASS=redacted
     - IMAP_SSL=true
     - IMAP_STARTTLS=false
 
@@ -219,7 +228,6 @@ services:
     # - LDAP_BLOCK_AUTO_CREATED_USERS=false
     - LDAP_BASE=ou=users,dc=nexdos,dc=de
     - LDAP_USER_FILTER=(&(objectclass=*)(memberOf=cn=gitlab,ou=groups,dc=nexdos,dc=de))
-    # - LDAP_USER_FILTER=(&(objectclass=*)(|(uid=%s)(cn=%s))(memberOf=cn=grafana,ou=groups,dc=nexdos,dc=de))
 
     # Docker registry
     - GITLAB_REGISTRY_ENABLED=true

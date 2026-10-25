@@ -145,9 +145,18 @@ RUN sudo apt update && sudo apt install -y fzf zsh
 # `conda init` had, fixed earlier with a profile.d file). COPY, not symlink -- /root is
 # typically 700, so a symlink sitting in /usr/local/bin but pointing back into
 # /root/.local/bin/ would still be unreadable for non-root users; a real copy avoids that.
-RUN curl -fsSL https://claude.ai/install.sh | bash
-RUN curl -fsSL https://chatgpt.com/codex/install.sh | sh
-RUN curl -fsSL https://herdr.dev/install.sh | sh
+#
+# None of these three are version-pinned -- each install script always grabs whatever's
+# current. That's only true the *first* time a given RUN line is built though: since the line
+# itself never changes text, Docker's build cache reuses the old layer on every later rebuild
+# and silently keeps whatever version was current back then (this is exactly how someone can
+# end up stuck on herdr 0.8.0 long after 0.9.x shipped). TOOLS_CACHEBUST forces a real refetch
+# on demand -- pass a new value (e.g. the current date) via --build-arg whenever you actually
+# want current versions, not just whenever something upstream of this line happens to change.
+ARG TOOLS_CACHEBUST=1
+RUN echo "cachebust=$TOOLS_CACHEBUST" && curl -fsSL https://claude.ai/install.sh | bash
+RUN echo "cachebust=$TOOLS_CACHEBUST" && curl -fsSL https://chatgpt.com/codex/install.sh | sh
+RUN echo "cachebust=$TOOLS_CACHEBUST" && curl -fsSL https://herdr.dev/install.sh | sh
 RUN cp /root/.local/bin/claude /root/.local/bin/codex /root/.local/bin/herdr /usr/local/bin/
 
 # [UPGRADE] Pi (open-source coding agent CLI, earendil-works). Its installer runs

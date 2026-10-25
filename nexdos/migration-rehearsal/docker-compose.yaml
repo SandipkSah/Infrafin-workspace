@@ -1,0 +1,151 @@
+name: nxreh
+
+services:
+  redis:
+    restart: always
+    image: redis:6.2.6
+    platform: linux/amd64
+    container_name: nxreh-redis
+    command:
+    - --loglevel warning
+    volumes:
+    - redis-data:/data:Z
+
+  postgresql:
+    restart: always
+    # Matches the image actually running on nexdos (v14 no longer meets gitlab 19.4.1's minimum)
+    image: kkimurak/sameersbn-postgresql:17
+    platform: linux/amd64
+    container_name: nxreh-postgresql
+    volumes:
+    - postgresql-data:/var/lib/postgresql:Z
+    environment:
+    - DB_USER=gitlab
+    - DB_PASS=rehearsal-test-pw
+    - DB_NAME=gitlabhq_production
+    - DB_EXTENSION=pg_trgm,btree_gist
+
+  gitlab:
+    restart: always
+    # Matches the exact version currently running on nexdos
+    image: sameersbn/gitlab:19.4.1
+    platform: linux/amd64
+    container_name: nxreh-gitlab
+    depends_on:
+    - redis
+    - postgresql
+    ports:
+    - "10080:80"
+    - "10022:22"
+    volumes:
+    - gitlab-data:/home/git/data:Z
+    - certs-data:/certs
+    # Same fix already applied for real on nexdos - carried over for parity
+    sysctls:
+    - net.ipv4.tcp_tw_reuse=1
+    environment:
+    - DEBUG=false
+
+    - DB_ADAPTER=postgresql
+    - DB_HOST=postgresql
+    - DB_PORT=5432
+    - DB_USER=gitlab
+    - DB_PASS=rehearsal-test-pw
+    - DB_NAME=gitlabhq_production
+
+    - REDIS_HOST=redis
+    - REDIS_PORT=6379
+
+    - TZ=Europe/Berlin
+    - GITLAB_TIMEZONE=Berlin
+
+    # Plain HTTP, no TLS - local rehearsal only, not reachable from outside this machine
+    - GITLAB_HTTPS=false
+    - GITLAB_HOST=localhost
+    - GITLAB_PORT=10080
+    - GITLAB_SSH_PORT=10022
+    - GITLAB_RELATIVE_URL_ROOT=
+
+    - GITLAB_SECRETS_DB_KEY_BASE=92086f7588eb6a3a79299e96d49be33f27824b9b3367fbeb0a0f4ffeadd0f5685e9ccf73ed43028ee6392dc68fc7c11846565d5a4db81efcfcc35d8e29cfde17
+    - GITLAB_SECRETS_SECRET_KEY_BASE=d39e10c8eb3ad946d8b173b7290e5df4f2945bf765a7140fc438ba1ab170d88f30ee7896f3545a66ff15125d47a8997d6b8bb1d6783b995735d213b9bb71f856
+    - GITLAB_SECRETS_OTP_KEY_BASE=5bb71577654890b52ab92f66119dde813490d8c875e2e2a6d414815c4864e6bd62e63c705439fe24762c5c221b66a402c603d9e2188dba4e35e5dd8f0126508c
+
+    - GITLAB_ROOT_PASSWORD=RehearsalTestPW123!
+    - GITLAB_ROOT_EMAIL=root@rehearsal.local
+
+    - GITLAB_BACKUP_SCHEDULE=disable
+
+    - SMTP_ENABLED=false
+    - IMAP_ENABLED=false
+    - OAUTH_ENABLED=false
+    - LDAP_ENABLED=false
+
+    # Docker registry - same linkage pattern as real nexdos, pointed at local registry service
+    - GITLAB_REGISTRY_ENABLED=true
+    - GITLAB_REGISTRY_HOST=localhost
+    - GITLAB_REGISTRY_PORT=15000
+    - GITLAB_REGISTRY_API_URL=http://registry:5000
+    - GITLAB_REGISTRY_KEY_PATH=/certs/registry.key
+    - GITLAB_REGISTRY_ISSUER=gitlab-issuer
+    - GITLAB_REGISTRY_GENERATE_INTERNAL_CERTIFICATES=true
+
+  registry:
+    image: registry:2
+    platform: linux/amd64
+    container_name: nxreh-registry
+    depends_on:
+      - gitlab
+    volumes:
+      - registry-data:/registry
+      - certs-data:/certs
+    environment:
+      - REGISTRY_LOG_LEVEL=error
+      - REGISTRY_STORAGE_FILESYSTEM_ROOTDIRECTORY=/registry
+      - REGISTRY_STORAGE_DELETE_ENABLED=true
+      - REGISTRY_AUTH_TOKEN_REALM=http://localhost:10080/jwt/auth
+      - REGISTRY_AUTH_TOKEN_SERVICE=container_registry
+      - REGISTRY_AUTH_TOKEN_ISSUER=gitlab-issuer
+      - REGISTRY_AUTH_TOKEN_ROOTCERTBUNDLE=/certs/registry.crt
+    restart: unless-stopped
+    ports:
+      - "15000:5000"
+
+  # --- "after" side of the rehearsal: fully bundled Omnibus gitlab-ce ---
+  # Version-matched to the sameersbn image above (19.4.1). Own volumes/ports so it
+  # runs side-by-side with the "before" stack above without colliding with it.
+  gitlab-ce:
+    restart: always
+    image: gitlab/gitlab-ce:19.4.1-ce.0
+    platform: linux/amd64
+    container_name: nxreh-gitlab-ce
+    hostname: localhost
+    ports:
+      - "20080:80"
+      - "20022:22"
+      - "20050:20050"
+    volumes:
+      - gitlab-ce-config:/etc/gitlab
+      - gitlab-ce-logs:/var/log/gitlab
+      - gitlab-ce-data:/var/opt/gitlab
+      - ./backups:/var/opt/gitlab/backups
+    shm_size: "256m"
+    environment:
+      GITLAB_OMNIBUS_CONFIG: |
+        external_url 'http://localhost:20080'
+        gitlab_rails['gitlab_shell_ssh_port'] = 20022
+        registry_external_url 'http://localhost:20050'
+        nginx['listen_port'] = 80
+        nginx['listen_https'] = false
+        gitlab_rails['backup_keep_time'] = 0
+        gitlab_rails['gitlab_email_enabled'] = false
+        prometheus_monitoring['enable'] = false
+
+volumes:
+  redis-data:
+  postgresql-data:
+  gitlab-data:
+  certs-data:
+  registry-data:
+  gitlab-ce-config:
+  gitlab-ce-logs:
+  gitlab-ce-data:

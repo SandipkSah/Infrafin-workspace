@@ -72,3 +72,6 @@ logs/
 
 # Nested repos (own remotes on git.infrafin.net)
 sdlc/
+
+# Nested repo (own remote on gitlab.amf)
+Amfileon/conda-upgrade/conda-image/
