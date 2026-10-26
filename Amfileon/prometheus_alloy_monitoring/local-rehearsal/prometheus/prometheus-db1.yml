@@ -1,0 +1,35 @@
+# db1 — receives Alloy pushes AND evaluates all alert rules (option A).
+global:
+  scrape_interval: 15s
+  evaluation_interval: 5s
+
+storage:
+  tsdb:
+    # Accept Alloy's backlog after an outage even when it is older than Prometheus' newest data.
+    out_of_order_time_window: 24h
+
+rule_files:
+  - alert.rules
+
+scrape_configs:
+  # The only thing Prometheus pulls itself: "is the host there at all?". Alloy already pushes the
+  # real metrics, so everything scraped here is dropped; the built-in `up` series remains.
+  - job_name: host-alive
+    scrape_interval: 5s
+    static_configs:
+      - { targets: ['172.31.10.20:9100'], labels: { host: db1 } }
+      - { targets: ['172.31.10.21:9100'], labels: { host: db2 } }
+      - { targets: ['172.31.10.30:9100'], labels: { host: cpu1 } }
+      - { targets: ['172.31.10.31:9100'], labels: { host: cpu2 } }
+      - { targets: ['172.31.10.40:9100'], labels: { host: gpu1 } }
+      - { targets: ['172.31.10.13:9100'], labels: { host: prod3 } }
+      - { targets: ['172.31.10.14:9100'], labels: { host: prod4 } }
+    metric_relabel_configs:
+      - action: drop
+        source_labels: [__name__]
+        regex: .+
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ['127.0.0.1:9093']

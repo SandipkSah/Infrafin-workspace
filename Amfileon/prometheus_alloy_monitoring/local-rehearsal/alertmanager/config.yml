@@ -1,0 +1,23 @@
+# db1 Alertmanager (in production: the existing dockprom one, with the Watchdog route added).
+route:
+  receiver: team                # stands in for Slack/email
+  group_by: ['alertname', 'host']
+  group_wait: 5s
+  group_interval: 10s
+  repeat_interval: 4h
+  routes:
+    - matchers: ['alertname="Watchdog"']
+      receiver: heartbeat
+      group_wait: 0s
+      group_interval: 10s
+      repeat_interval: 10s      # production: 1m, with a few minutes of grace at the heartbeat service
+
+receivers:
+  - name: team
+    webhook_configs:
+      - url: http://172.31.10.60:5001/
+        send_resolved: false
+  - name: heartbeat
+    webhook_configs:
+      - url: http://172.31.10.61:8000/ping   # production: https://hc-ping.com/<uuid>
+        send_resolved: false

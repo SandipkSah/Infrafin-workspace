@@ -1,0 +1,39 @@
+# /srv/docker/alloy on every host — pushes this host's metrics to Prometheus on db1 AND db2.
+#
+#   config/common.alloy   same everywhere (remote_write + nodeexporter/cadvisor/pushgateway)
+#   config/host.alloy     this host's extra exporters (copied from deploy/alloy/hosts/<host>.alloy)
+#   .env                  ALLOY_PASSWORD (secret), AMF_HOST, AMF_HOST_IP
+#
+# Joins dockprom's existing `monitor-net` network to scrape its exporters by name; dockprom is
+# not modified. Port 12345 (Alloy's default HTTP port) is published on the host's LAN IP so db1's
+# Prometheus can check the host is alive (host-alive job → HostDown alert).
+services:
+  alloy:
+    image: grafana/alloy:v1.21.2
+    restart: unless-stopped
+    command:
+      - run
+      - --disable-reporting                # no anonymous usage stats to Grafana Labs
+      - --server.http.listen-addr=0.0.0.0:12345
+      - --storage.path=/var/lib/alloy/data
+      - /etc/alloy                       # loads every *.alloy file in the directory
+    environment:
+      ALLOY_PASSWORD: ${ALLOY_PASSWORD:?set in .env}
+      AMF_HOST: ${AMF_HOST:?set in .env}
+      ALLOY_HTTP_PASSWORD: ${ALLOY_HTTP_PASSWORD:?set in .env}   # Alloy UI login (user admin)
+    ports:
+      - "${AMF_HOST_IP:?set in .env}:12345:12345"
+    volumes:
+      - ./config:/etc/alloy:ro
+      - ./amfileon-ca.pem:/etc/alloy-ca/amfileon-ca.pem:ro
+      - alloy_data:/var/lib/alloy/data   # the WAL: survives restarts, so nothing buffered is lost
+    networks:
+      - monitor
+
+volumes:
+  alloy_data: {}
+
+networks:
+  monitor:
+    name: dockprom_monitor-net
+    external: true

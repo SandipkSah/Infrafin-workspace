@@ -1,0 +1,25 @@
+// db1 — exporters specific to this host (in addition to common.alloy).
+// Mirrors the scrape jobs of /srv/docker/dockprom/prometheus/prometheus-customized.yaml on db1.
+
+prometheus.scrape "nginx" {
+  job_name        = "nginx"
+  targets         = [{ "__address__" = "nginx-prometheus-exporter:9113" }]
+  scrape_interval = "15s"
+  forward_to      = [prometheus.remote_write.both.receiver]
+}
+
+prometheus.scrape "postgres_db1" {
+  job_name        = "postgres-db1"
+  targets         = [{ "__address__" = "postgres-exporter-db1:9187", "environment" = "production", "database" = "db1" }]
+  scrape_interval = "15s"
+  forward_to      = [prometheus.remote_write.both.receiver]
+}
+
+prometheus.scrape "postgres_db1_develop" {
+  job_name        = "postgres-db1-develop"
+  targets         = [{ "__address__" = "postgres-exporter-db1-develop:9187", "environment" = "develop", "database" = "db1-develop" }]
+  scrape_interval = "15s"
+  forward_to      = [prometheus.remote_write.both.receiver]
+}
+
+// scaphandre is disabled on db1 (profile "cli-only"), so it is not scraped.

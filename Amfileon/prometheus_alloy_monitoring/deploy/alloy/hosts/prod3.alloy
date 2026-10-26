@@ -1,0 +1,18 @@
+// prod3 — exporters specific to this host (in addition to common.alloy).
+// Mirrors the scrape jobs of /srv/docker/dockprom/prometheus/prometheus-customized.yaml on prod3.
+
+prometheus.scrape "nginx" {
+  job_name        = "nginx"
+  targets         = [{ "__address__" = "nginx-prometheus-exporter:9113" }]
+  scrape_interval = "15s"
+  forward_to      = [prometheus.remote_write.both.receiver]
+}
+
+prometheus.scrape "scaphandre" {
+  job_name        = "scaphandre"
+  targets         = [{ "__address__" = "scaphandre:8080" }]
+  // scaphandre is slow on busy hosts (≈9s on db2): power data every 60s is plenty
+  scrape_interval = "60s"
+  scrape_timeout  = "30s"
+  forward_to      = [prometheus.relabel.scaphandre_host_level.receiver]
+}

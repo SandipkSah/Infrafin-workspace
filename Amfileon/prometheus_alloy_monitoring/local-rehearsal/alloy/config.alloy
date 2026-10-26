@@ -1,0 +1,49 @@
+// Same file on every host (the team's notes, corrected):
+//  - component labels must be identifiers ("db1.prometheus.amf" is not valid)
+//  - one remote_write with TWO endpoints, so every sample goes to db1 AND db2;
+//    each endpoint has its own queue, so one being down does not block the other
+//  - forward_to must name the remote_write component that exists
+//  - WAL kept up to 24h so a db1/db2 outage shorter than that is re-sent afterwards
+
+prometheus.scrape "node_exporter" {
+  targets = [
+    {
+      "__address__" = "127.0.0.1:9100",
+      "host"        = constants.hostname,
+      "role"        = "core",
+    },
+  ]
+  forward_to      = [prometheus.remote_write.both.receiver]
+  scrape_interval = "10s"
+  scrape_timeout  = "5s"
+}
+
+prometheus.remote_write "both" {
+  wal {
+    max_keepalive_time = "24h"
+  }
+
+  endpoint {
+    name = "db1"
+    url  = "https://db1.prometheus.amf/api/v1/write"
+    tls_config {
+      ca_file = "/etc/alloy/ca.pem"   // real hosts: /usr/local/share/ca-certificates/CA.pem
+    }
+    basic_auth {
+      username = "alloyuser"
+      password = sys.env("ALLOY_PASSWORD")
+    }
+  }
+
+  endpoint {
+    name = "db2"
+    url  = "https://db2.prometheus.amf/api/v1/write"
+    tls_config {
+      ca_file = "/etc/alloy/ca.pem"
+    }
+    basic_auth {
+      username = "alloyuser"
+      password = sys.env("ALLOY_PASSWORD")
+    }
+  }
+}

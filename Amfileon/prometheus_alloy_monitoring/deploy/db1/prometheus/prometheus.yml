@@ -1,0 +1,50 @@
+# db1 — receives Alloy pushes AND evaluates all alert rules.
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+storage:
+  tsdb:
+    # Accept Alloy's backlog after an outage even when it is older than the newest data
+    # (proven in the local rehearsal: 319k late samples accepted, 0 rejected).
+    out_of_order_time_window: 24h
+
+rule_files:
+  - /etc/prometheus/alert.rules
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ['alertmanager:9093']
+
+scrape_configs:
+  # Is each host (and its Alloy agent) reachable at all? Pull, because a dead host can't push.
+  # Only the built-in `up` series is kept; Alloy's own metrics are dropped.
+  - job_name: host-alive
+    static_configs:
+      - { targets: ['10.10.10.20:12345'], labels: { host: db1 } }
+      - { targets: ['10.10.10.21:12345'], labels: { host: db2 } }
+      - { targets: ['10.10.10.30:12345'], labels: { host: cpu1 } }
+      - { targets: ['10.10.10.31:12345'], labels: { host: cpu2 } }
+      - { targets: ['10.10.10.40:12345'], labels: { host: gpu1 } }
+      - { targets: ['10.10.10.13:12345'], labels: { host: prod3 } }
+      # prod4 (10.10.10.14): add when access is sorted out
+    metric_relabel_configs:
+      - action: drop
+        source_labels: [__name__]
+        regex: .+
+
+  # The monitoring stack itself.
+  - job_name: prometheus-db1
+    basic_auth: { username: grafana, password_file: /tmp/grafana.password }
+    static_configs:
+      - { targets: ['localhost:9090'], labels: { host: db1 } }
+  - job_name: prometheus-db2
+    scheme: https
+    tls_config: { ca_file: /etc/prometheus/amfileon-ca.pem }
+    basic_auth: { username: grafana, password_file: /tmp/grafana.password }
+    static_configs:
+      - { targets: ['db2.prometheus.amf'], labels: { host: db2 } }
+  - job_name: alertmanager
+    static_configs:
+      - { targets: ['alertmanager:9093'], labels: { host: db1 } }

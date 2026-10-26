@@ -1,0 +1,14 @@
+# Included by nginx-proxy inside "location /" of db1/db2.prometheus.amf
+# (installed as /etc/nginx/vhost.d/<VIRTUAL_HOST>_location).
+# Least privilege on top of Prometheus' own basic auth (which still checks every password):
+#   alloyuser → may ONLY push   (POST /api/v1/write)
+#   grafana   → may ONLY read   (everything except /api/v1/write)
+#   nobody    → lifecycle/admin endpoints (/-/quit, /-/reload, /api/v1/admin/*)
+# The user is recognised from the Basic-auth header: base64("alloyuser:") starts with
+# "YWxsb3l1c2VyO" for every password. Decisions use nginx's normalised $uri.
+set $amf_acl "";
+if ($uri ~ ^/api/v1/write) { set $amf_acl "W"; }
+if ($http_authorization ~ "^Basic YWxsb3l1c2VyO") { set $amf_acl "${amf_acl}A"; }
+if ($amf_acl = "W") { return 403; }   # write by anyone other than alloyuser
+if ($amf_acl = "A") { return 403; }   # alloyuser doing anything other than write
+if ($uri ~ ^/(-/(quit|reload)|api/v1/admin)) { return 403; }

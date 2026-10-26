@@ -1,0 +1,43 @@
+# /srv/docker/prometheus on db2 — the second copy of all Amfileon metrics.
+# Receives Alloy pushes only: no scraping, no alert rules (those live on db1).
+# Reached as https://db2.prometheus.amf through nginx-proxy (TLS) + Prometheus basic auth.
+#
+# Secrets: .env (see .env.example) holds the bcrypt hashes; web.yml is built from them at start,
+# so no secret file lives next to this compose file.
+services:
+  prometheus:
+    image: prom/prometheus:v3.15.1
+    restart: unless-stopped
+    environment:
+      PROMETHEUS_ALLOYUSER_HASH: ${PROMETHEUS_ALLOYUSER_HASH:?set in .env}
+      PROMETHEUS_GRAFANA_HASH: ${PROMETHEUS_GRAFANA_HASH:?set in .env}
+      VIRTUAL_HOST: db2.prometheus.amf
+      VIRTUAL_PORT: "9090"
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        printf 'basic_auth_users:\n  alloyuser: %s\n  grafana: %s\n' \
+          "$$PROMETHEUS_ALLOYUSER_HASH" "$$PROMETHEUS_GRAFANA_HASH" > /tmp/web.yml
+        exec /bin/prometheus \
+          --config.file=/etc/prometheus/prometheus.yml \
+          --storage.tsdb.path=/prometheus \
+          --storage.tsdb.retention.time=90d \
+          --storage.tsdb.retention.size=300GB \
+          --web.config.file=/tmp/web.yml \
+          --web.enable-remote-write-receiver \
+          --web.external-url=https://db2.prometheus.amf/
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    tmpfs:
+      - /tmp
+    networks:
+      - proxy
+
+volumes:
+  prometheus_data: {}
+
+networks:
+  proxy:
+    name: proxy_network
+    external: true

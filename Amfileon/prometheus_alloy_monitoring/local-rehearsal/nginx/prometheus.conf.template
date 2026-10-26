@@ -1,0 +1,15 @@
+# Stands in for nginx-proxy (VIRTUAL_HOST): terminates TLS and forwards to Prometheus on localhost.
+server {
+    listen 443 ssl;
+    server_name ${SERVER_NAME};
+
+    ssl_certificate     /certs/${SERVER_NAME}.pem;
+    ssl_certificate_key /certs/${SERVER_NAME}.key;
+
+    client_max_body_size 64m;   # remote-write batches after an outage can be large
+
+    location / {
+        proxy_pass http://127.0.0.1:9090;
+        proxy_set_header Host $host;
+    }
+}

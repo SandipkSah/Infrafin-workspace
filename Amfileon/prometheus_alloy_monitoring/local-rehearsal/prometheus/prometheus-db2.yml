@@ -1,0 +1,4 @@
+# db2 — a second copy of the data only: no scraping, no rules, no alerting.
+storage:
+  tsdb:
+    out_of_order_time_window: 24h

@@ -1,0 +1,224 @@
+# Local rehearsal of the agreed monitoring plan:
+#
+#   all 7 hosts:  node-exporter + Alloy ──push (TLS + auth)──┬──► Prometheus db1 ── rules ──► Alertmanager ──► "Slack"
+#                                                            │                                   └─ Watchdog ──► heartbeat
+#                                                            └──► Prometheus db2 (copy, no rules)
+#   Grafana (db1): datasources db1 + db2
+#
+# Each "host" is a small base container with the real host's IP; that host's services join its
+# network namespace (network_mode: service:<host>), so they share one IP like on a real server.
+#
+#   db1 .20  db2 .21  cpu1 .30  cpu2 .31  gpu1 .40  prod3 .13  prod4 .14      (172.31.10.x)
+#   sink .60 (fake Slack)   heartbeat .61 (fake healthchecks.io)   client .50 (runs the tests)
+#
+# Run ./setup.sh once first (passwords, CA + certificates, prometheus/web.yml).
+# Grafana from the Mac: http://localhost:13000 (admin / rehearsal).
+
+name: amf-alloy-rehearsal
+
+networks:
+  lan:
+    ipam:
+      config:
+        - subnet: 172.31.10.0/24
+
+volumes:
+  db1_prometheus_data: {}
+  db2_prometheus_data: {}
+
+x-host: &host
+  image: alpine:3.22
+  command: ["sleep", "infinity"]
+  init: true
+  restart: unless-stopped
+
+x-nodeexporter: &nodeexporter
+  image: prom/node-exporter:v1.12.1   # production: Ubuntu's prometheus-node-exporter package
+  volumes:
+    - /proc:/host/proc:ro
+    - /sys:/host/sys:ro
+    - /:/rootfs:ro
+  command:
+    - '--path.procfs=/host/proc'
+    - '--path.rootfs=/rootfs'
+    - '--path.sysfs=/host/sys'
+    - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)'
+  restart: unless-stopped
+
+x-alloy: &alloy
+  image: grafana/alloy:v1.21.2        # production: Grafana's apt package, /etc/alloy/config.alloy
+  command:
+    - run
+    - --server.http.listen-addr=0.0.0.0:12345
+    - --storage.path=/var/lib/alloy/data
+    - /etc/alloy/config.alloy
+  environment:
+    ALLOY_PASSWORD: ${ALLOY_PASSWORD}
+  volumes:
+    - ./alloy/config.alloy:/etc/alloy/config.alloy:ro
+    - ./certs/ca.pem:/etc/alloy/ca.pem:ro
+  restart: unless-stopped
+
+x-prometheus: &prometheus
+  image: prom/prometheus:v3.15.1
+  restart: unless-stopped
+
+x-proxy: &proxy
+  image: nginx:1.29-alpine
+  volumes:
+    - ./nginx/prometheus.conf.template:/etc/nginx/templates/default.conf.template:ro
+    - ./certs:/certs:ro
+  restart: unless-stopped
+
+services:
+
+  # ═════════════════════════════ db1 ═════════════════════════════
+  db1:
+    <<: *host
+    hostname: db1
+    networks:
+      lan:
+        ipv4_address: 172.31.10.20
+        aliases: [db1.prometheus.amf]
+    ports: ["13000:3000"]   # Grafana
+  db1-nodeexporter: { <<: *nodeexporter, network_mode: "service:db1", depends_on: [db1] }
+  db1-alloy:        { <<: *alloy,        network_mode: "service:db1", depends_on: [db1] }
+
+  db1-prometheus:
+    <<: *prometheus
+    network_mode: "service:db1"
+    depends_on: [db1]
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=15d'
+      - '--web.listen-address=127.0.0.1:9090'
+      - '--web.config.file=/etc/prometheus/web.yml'
+      - '--web.enable-remote-write-receiver'
+      - '--web.enable-lifecycle'
+      # REHEARSAL ONLY: Prometheus rejects samples older than (newest sample − ½ block duration),
+      # 1h by default. 10m blocks shrink that window to 5m, so a 10-minute outage exercises the
+      # same "late data" path a >1h outage would in production.
+      - '--storage.tsdb.min-block-duration=10m'
+      - '--storage.tsdb.max-block-duration=10m'
+    volumes:
+      - ./prometheus/prometheus-db1.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/alert.rules:/etc/prometheus/alert.rules:ro
+      - ./prometheus/web.yml:/etc/prometheus/web.yml:ro
+      - db1_prometheus_data:/prometheus
+
+  db1-proxy:
+    <<: *proxy
+    network_mode: "service:db1"
+    depends_on: [db1]
+    environment: { SERVER_NAME: db1.prometheus.amf }
+
+  db1-alertmanager:
+    image: prom/alertmanager:v0.31.1   # dockprom's version
+    network_mode: "service:db1"
+    depends_on: [db1]
+    command:
+      - '--config.file=/etc/alertmanager/config.yml'
+      - '--storage.path=/alertmanager'
+    volumes: [./alertmanager:/etc/alertmanager:ro]
+    restart: unless-stopped
+
+  db1-grafana:
+    image: grafana/grafana:12.4.0      # dockprom's version
+    network_mode: "service:db1"
+    depends_on: [db1]
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: rehearsal
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_UNIFIED_ALERTING_ENABLED: "false"
+      GRAFANA_DS_PASSWORD: ${GRAFANA_DS_PASSWORD}
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./certs/ca.pem:/certs/ca.pem:ro
+    restart: unless-stopped
+
+  # ═════════════════════════════ db2 ═════════════════════════════
+  db2:
+    <<: *host
+    hostname: db2
+    networks:
+      lan:
+        ipv4_address: 172.31.10.21
+        aliases: [db2.prometheus.amf]
+  db2-nodeexporter: { <<: *nodeexporter, network_mode: "service:db2", depends_on: [db2] }
+  db2-alloy:        { <<: *alloy,        network_mode: "service:db2", depends_on: [db2] }
+
+  db2-prometheus:
+    <<: *prometheus
+    network_mode: "service:db2"
+    depends_on: [db2]
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=15d'
+      - '--web.listen-address=127.0.0.1:9090'
+      - '--web.config.file=/etc/prometheus/web.yml'
+      - '--web.enable-remote-write-receiver'
+      - '--web.enable-lifecycle'
+      # REHEARSAL ONLY: Prometheus rejects samples older than (newest sample − ½ block duration),
+      # 1h by default. 10m blocks shrink that window to 5m, so a 10-minute outage exercises the
+      # same "late data" path a >1h outage would in production.
+      - '--storage.tsdb.min-block-duration=10m'
+      - '--storage.tsdb.max-block-duration=10m'
+    volumes:
+      - ./prometheus/prometheus-db2.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/web.yml:/etc/prometheus/web.yml:ro
+      - db2_prometheus_data:/prometheus
+
+  db2-proxy:
+    <<: *proxy
+    network_mode: "service:db2"
+    depends_on: [db2]
+    environment: { SERVER_NAME: db2.prometheus.amf }
+
+  # ═══════════════════════ other hosts (exporter + Alloy only) ═══════════════════════
+  cpu1:  { <<: *host, hostname: cpu1,  networks: { lan: { ipv4_address: 172.31.10.30 } } }
+  cpu1-nodeexporter:  { <<: *nodeexporter, network_mode: "service:cpu1",  depends_on: [cpu1] }
+  cpu1-alloy:         { <<: *alloy,        network_mode: "service:cpu1",  depends_on: [cpu1] }
+
+  cpu2:  { <<: *host, hostname: cpu2,  networks: { lan: { ipv4_address: 172.31.10.31 } } }
+  cpu2-nodeexporter:  { <<: *nodeexporter, network_mode: "service:cpu2",  depends_on: [cpu2] }
+  cpu2-alloy:         { <<: *alloy,        network_mode: "service:cpu2",  depends_on: [cpu2] }
+
+  gpu1:  { <<: *host, hostname: gpu1,  networks: { lan: { ipv4_address: 172.31.10.40 } } }
+  gpu1-nodeexporter:  { <<: *nodeexporter, network_mode: "service:gpu1",  depends_on: [gpu1] }
+  gpu1-alloy:         { <<: *alloy,        network_mode: "service:gpu1",  depends_on: [gpu1] }
+
+  prod3: { <<: *host, hostname: prod3, networks: { lan: { ipv4_address: 172.31.10.13 } } }
+  prod3-nodeexporter: { <<: *nodeexporter, network_mode: "service:prod3", depends_on: [prod3] }
+  prod3-alloy:        { <<: *alloy,        network_mode: "service:prod3", depends_on: [prod3] }
+
+  prod4: { <<: *host, hostname: prod4, networks: { lan: { ipv4_address: 172.31.10.14 } } }
+  prod4-nodeexporter: { <<: *nodeexporter, network_mode: "service:prod4", depends_on: [prod4] }
+  prod4-alloy:        { <<: *alloy,        network_mode: "service:prod4", depends_on: [prod4] }
+
+  # ═════════════════════════════ test helpers ═════════════════════════════
+  sink:        # fake Slack / email
+    image: python:3.13-alpine
+    command: ["python", "-u", "/sink.py"]
+    volumes: [./helpers/sink.py:/sink.py:ro]
+    networks: { lan: { ipv4_address: 172.31.10.60 } }
+    restart: unless-stopped
+
+  heartbeat:   # fake healthchecks.io — lives OUTSIDE db1, like the real service
+    image: python:3.13-alpine
+    command: ["python", "-u", "/heartbeat.py"]
+    environment: { GRACE_SECONDS: "30" }   # production: a few minutes
+    volumes: [./helpers/heartbeat.py:/heartbeat.py:ro]
+    networks: { lan: { ipv4_address: 172.31.10.61 } }
+    restart: unless-stopped
+
+  client:      # "an operator's machine" on the LAN; the test script runs curl from here
+    build: ./tools
+    image: amf-alloy-rehearsal-tools
+    command: ["sleep", "infinity"]
+    init: true
+    volumes: [./certs/ca.pem:/certs/ca.pem:ro]
+    networks: { lan: { ipv4_address: 172.31.10.50 } }
+    restart: unless-stopped

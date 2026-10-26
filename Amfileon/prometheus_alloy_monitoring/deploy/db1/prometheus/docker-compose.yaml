@@ -1,0 +1,93 @@
+# /srv/docker/prometheus on db1 — the first copy of all Amfileon metrics, plus alerting:
+#   prometheus    receives Alloy pushes, checks every host's Alloy is reachable (host-alive),
+#                 evaluates alert.rules
+#   alertmanager  emails alerts to ALERT_EMAIL_TO and sends the Watchdog heartbeat to healthchecks.io
+# Prometheus is reached as https://db1.prometheus.amf (nginx-proxy TLS + basic auth).
+# Alertmanager is NOT exposed; only Prometheus talks to it.
+#
+# Secrets: .env (see .env.example). web.yml and the URL files are built from it at start-up,
+# inside the containers' tmpfs, so .env is the only secret file on disk.
+services:
+  prometheus:
+    image: prom/prometheus:v3.15.1
+    restart: unless-stopped
+    environment:
+      PROMETHEUS_ALLOYUSER_HASH: ${PROMETHEUS_ALLOYUSER_HASH:?set in .env}
+      PROMETHEUS_GRAFANA_HASH: ${PROMETHEUS_GRAFANA_HASH:?set in .env}
+      GRAFANA_PROMETHEUS_PASSWORD: ${GRAFANA_PROMETHEUS_PASSWORD:?set in .env}   # to scrape itself + db2
+      VIRTUAL_HOST: db1.prometheus.amf
+      VIRTUAL_PORT: "9090"
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        printf 'basic_auth_users:\n  alloyuser: %s\n  grafana: %s\n' \
+          "$$PROMETHEUS_ALLOYUSER_HASH" "$$PROMETHEUS_GRAFANA_HASH" > /tmp/web.yml
+        printf '%s' "$$GRAFANA_PROMETHEUS_PASSWORD" > /tmp/grafana.password
+        exec /bin/prometheus \
+          --config.file=/etc/prometheus/prometheus.yml \
+          --storage.tsdb.path=/prometheus \
+          --storage.tsdb.retention.time=90d \
+          --storage.tsdb.retention.size=100GB \
+          --web.config.file=/tmp/web.yml \
+          --web.enable-remote-write-receiver \
+          --web.external-url=https://db1.prometheus.amf/
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./alert.rules:/etc/prometheus/alert.rules:ro
+      - ./amfileon-ca.pem:/etc/prometheus/amfileon-ca.pem:ro
+      - prometheus_data:/prometheus
+    tmpfs:
+      - /tmp
+    networks:
+      - default
+      - proxy
+    depends_on:
+      - alertmanager
+
+  alertmanager:
+    image: prom/alertmanager:v0.31.1
+    restart: unless-stopped
+    environment:
+      ALERT_EMAIL_TO: ${ALERT_EMAIL_TO:?set in .env}
+      SMTP_SMARTHOST: ${SMTP_SMARTHOST:?set in .env}
+      SMTP_FROM: ${SMTP_FROM:?set in .env}
+      SMTP_USERNAME: ${SMTP_USERNAME:?set in .env}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:?set in .env}
+      HEALTHCHECKS_PING_URL: ${HEALTHCHECKS_PING_URL:-}   # optional: empty = heartbeat off
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        printf '%s' "$$SMTP_PASSWORD" > /tmp/smtp_password
+        if [ -n "$$HEALTHCHECKS_PING_URL" ]; then
+          printf '%s' "$$HEALTHCHECKS_PING_URL" > /tmp/healthchecks_ping_url
+          WATCHDOG_RECEIVER=heartbeat
+        else
+          echo "WARNING: HEALTHCHECKS_PING_URL is empty - Watchdog heartbeat is OFF; nothing will page if db1 dies"
+          printf '%s' "http://127.0.0.1:9/heartbeat-disabled" > /tmp/healthchecks_ping_url   # never used
+          WATCHDOG_RECEIVER=discard
+        fi
+        sed -e "s|__WATCHDOG_RECEIVER__|$$WATCHDOG_RECEIVER|" \
+            -e "s|__ALERT_EMAIL_TO__|$$ALERT_EMAIL_TO|" \
+            -e "s|__SMTP_SMARTHOST__|$$SMTP_SMARTHOST|" \
+            -e "s|__SMTP_FROM__|$$SMTP_FROM|" \
+            -e "s|__SMTP_USERNAME__|$$SMTP_USERNAME|" \
+            /etc/alertmanager/alertmanager.yml > /tmp/alertmanager.yml
+        exec /bin/alertmanager \
+          --config.file=/tmp/alertmanager.yml \
+          --storage.path=/alertmanager
+    volumes:
+      - ./alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanager_data:/alertmanager
+    tmpfs:
+      - /tmp
+    networks:
+      - default
+
+volumes:
+  prometheus_data: {}
+  alertmanager_data: {}
+
+networks:
+  proxy:
+    name: proxy_network
+    external: true

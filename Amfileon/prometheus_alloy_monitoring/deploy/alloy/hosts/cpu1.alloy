@@ -1,0 +1,11 @@
+// cpu1 — exporters specific to this host (in addition to common.alloy).
+// Mirrors the scrape jobs of /srv/docker/dockprom/prometheus/prometheus-customized.yaml on cpu1.
+
+prometheus.scrape "nginx" {
+  job_name        = "nginx"
+  targets         = [{ "__address__" = "nginx-prometheus-exporter:9113" }]
+  scrape_interval = "15s"
+  forward_to      = [prometheus.remote_write.both.receiver]
+}
+
+// scaphandre is disabled on cpu1 (profile "cli-only"), so it is not scraped.

@@ -1,0 +1,34 @@
+# Loaded by db1's Prometheus only. `for:` durations are shortened for the rehearsal
+# (production: HostDown 1m).
+groups:
+  - name: meta
+    rules:
+      # Always firing. Alertmanager forwards it to the external heartbeat service; if the
+      # heartbeat stops (db1, Prometheus, Alertmanager or the network is down) that service pages us.
+      - alert: Watchdog
+        expr: vector(1)
+        labels:
+          severity: none
+        annotations:
+          summary: "Alerting pipeline heartbeat"
+
+  - name: hosts
+    rules:
+      - alert: HostDown
+        expr: up{job="host-alive"} == 0
+        for: 30s
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.host }} is down"
+          description: "node-exporter on {{ $labels.host }} ({{ $labels.instance }}) has not answered for 30s."
+
+      - alert: HostDiskAlmostFull
+        expr: |
+          (1 - node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs"}
+             / node_filesystem_size_bytes{fstype!~"tmpfs|overlay|squashfs"}) * 100 > 90
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.host }}: {{ $labels.mountpoint }} is {{ humanize $value }}% full"

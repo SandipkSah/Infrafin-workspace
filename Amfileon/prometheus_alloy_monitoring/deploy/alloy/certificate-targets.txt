@@ -1,0 +1,127 @@
+# HTTPS names whose certificates db1's Alloy checks every minute (port 443, verified
+# against the Amfileon CA, exactly like a client). One name per line; then run
+#   python3 alloy/gen_certificates.py   and re-stage db1's Alloy.
+#
+# Built 2026-10-26 from the certificate files in /srv/docker/proxy on all hosts: only names
+# that resolve in DNS AND present a valid certificate for themselves today are listed.
+aca.cpu1.amf
+aha.cpu1.amf
+aha.cpu2.amf
+amfsta.pnl.amf
+amfsta.trading.amf
+artifacts.amf
+chat.amf
+cpu1.ch.amf
+cpu1.dev.ch.amf
+cpu1.dev.chproxy.amf
+cpu1.minio.amf
+cpu1.s3.amf
+cpu2.dev.ch.amf
+cpu2.dev.chproxy.amf
+dashboard.cpu1.amf
+data.amf
+db1.ch.amf
+db1.loki.amf
+db1.minio.amf
+db1.production.ch.amf
+db1.prometheus.amf
+db1.rustfs.amf
+db1.s3.amf
+db1.staging.ch.amf
+db2.external.ch.amf
+db2.minio.amf
+db2.pgadmin.amf
+db2.production.ch.amf
+db2.production.marketdata.ch.amf
+db2.prometheus.amf
+db2.rustfs.amf
+db2.s3.amf
+db2.staging.ch.amf
+db2.staging.marketdata.ch.amf
+dev.trading.amf
+euamm.amf
+gitlab.amf
+gpu1.ch.amf
+gpu1.dev.ch.amf
+gpu1.dev.chproxy.amf
+gpu1.minio.amf
+gpu1.s3.amf
+grafana.cpu1.amf
+grafana.cpu2.amf
+grafana.db1.amf
+grafana.db2.amf
+grafana.gpu1.amf
+grafana.prod3.amf
+grafana.prod4.amf
+gsind.pnl.amf
+gsind.trading.amf
+hc.amf
+isar.amf
+lb.ch.amf
+ldap.amf
+llm.amf
+loki.amf
+netbox.amf
+oalt.amf
+pages.amf
+pass.amf
+pgadmin.amf
+pnl.amf
+preview.dagster.amf
+prod3.minio.amf
+prod3.production.ch.amf
+prod3.production.marketdata.ch.amf
+prod3.production.marketdata.chproxy.amf
+prod3.s3.amf
+production.redis.amf
+productionv2.dagster.amf
+pypi.amf
+registry.amf
+s3.amf
+sa2-dashboard.amf
+sa2-go.amf
+sentry.amf
+signals.amf
+staging.amfsta.pnl.amf
+staging.amfsta.trading.amf
+staging.pnl.amf
+stagingv2.dagster.amf
+start.amf
+statarb.cpu1.amf
+statarb.cpu2.amf
+statarb2.cpu2.amf
+test.infisical.amf
+ucits.amf
+uptime.amf
+vault.amf
+xpressfeed.amf
+
+# NOT monitored — certificate file + DNS record exist, but port 443 presents a certificate for
+# a different name (no running vhost; probably retired). Clean up, or fix and move above:
+#   dashboard.amf
+#   db1.external.ch.amf
+#   db1.gluster.amf
+#   db1.production.keeper.amf
+#   db1.production.mongo.amf
+#   db1.redis.amf
+#   develop.dagster.amf
+#   develop.mongo.amf
+#   dockerwatch.gpu1.amf
+#   etcd.pg1.amf
+#   git-ee.amf
+#   git.amf
+#   kibana.amf
+#   minio.amf
+#   mongo.amf
+#   pg1.amf
+#   preview.dashboard.amf
+#   raw.dagster.amf
+#   raw.mongo.amf
+#   redis.amf
+#   registry.git.amf
+#   research.dagster.amf
+#   research.mongo.amf
+#   sentrytest.amf
+#   shhh.amf
+#   smb.amf
+#   ui.gpu1.ch.amf

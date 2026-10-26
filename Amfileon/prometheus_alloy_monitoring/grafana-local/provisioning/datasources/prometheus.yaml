@@ -1,0 +1,38 @@
+apiVersion: 1
+
+# Same names/uids as planned for dockprom's Grafana on db1, so dashboards move over unchanged.
+datasources:
+  - name: Prometheus-db1
+    uid: prom-db1
+    type: prometheus
+    access: proxy
+    url: https://db1.prometheus.amf
+    isDefault: true
+    editable: false
+    basicAuth: true
+    basicAuthUser: grafana
+    jsonData:
+      tlsAuthWithCACert: true
+      httpMethod: POST
+      prometheusType: Prometheus
+      timeInterval: 15s
+    secureJsonData:
+      basicAuthPassword: $GRAFANA_PROMETHEUS_PASSWORD
+      tlsCACert: $__file{/etc/grafana/amfileon-ca.pem}
+
+  - name: Prometheus-db2
+    uid: prom-db2
+    type: prometheus
+    access: proxy
+    url: https://db2.prometheus.amf
+    editable: false
+    basicAuth: true
+    basicAuthUser: grafana
+    jsonData:
+      tlsAuthWithCACert: true
+      httpMethod: POST
+      prometheusType: Prometheus
+      timeInterval: 15s
+    secureJsonData:
+      basicAuthPassword: $GRAFANA_PROMETHEUS_PASSWORD
+      tlsCACert: $__file{/etc/grafana/amfileon-ca.pem}

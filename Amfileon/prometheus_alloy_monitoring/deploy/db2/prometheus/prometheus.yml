@@ -1,0 +1,6 @@
+# db2 — a second copy of the data only: no scraping, no rules, no alerting.
+storage:
+  tsdb:
+    # Accept Alloy's backlog after an outage even when it is older than the newest data
+    # (proven in the local rehearsal: 319k late samples accepted, 0 rejected).
+    out_of_order_time_window: 24h

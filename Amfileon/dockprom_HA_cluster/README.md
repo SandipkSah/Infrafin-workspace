@@ -1,5 +1,10 @@
 # Amfileon Monitoring HA Cluster — Proposal & Design
 
+> **Superseded — not deployed (2026-10-26).** The team chose a simpler design: Alloy on every
+> host pushing to two Prometheus instances (db1, db2), alerting on db1. What is actually running is
+> documented in [`../prometheus_alloy_monitoring/`](../prometheus_alloy_monitoring/). This HA design
+> (Thanos, Alertmanager cluster, Grafana VIP) and its rehearsal are kept as the upgrade path.
+
 **Proposal — prepared 2026-10-07 · status: validated in local rehearsal 2026-10-12 (28/28 checks
 pass, see [Rehearsal results](#rehearsal-results--2026-10-12)); not yet deployed to servers**
 

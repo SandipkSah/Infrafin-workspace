@@ -1,0 +1,101 @@
+# Evaluated by db1's Prometheus only (db2 holds a copy of the data but no rules → no duplicates).
+# Every series carries a `host` label (added by Alloy, or by the host-alive job).
+groups:
+  - name: meta
+    rules:
+      # Always firing. Alertmanager forwards it every minute to healthchecks.io; if the pings stop
+      # (db1, this Prometheus, Alertmanager or db1's internet is down) healthchecks.io pages us.
+      - alert: Watchdog
+        expr: vector(1)
+        labels:
+          severity: none
+        annotations:
+          summary: "Alerting pipeline heartbeat (routed to healthchecks.io, not to the team)"
+
+  - name: hosts
+    rules:
+      - alert: HostDown
+        expr: up{job="host-alive"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.host }} is down (or its Alloy agent is)"
+          description: "db1 cannot reach Alloy on {{ $labels.host }} ({{ $labels.instance }}) for 2 minutes."
+
+      - alert: ExporterDown
+        expr: up{job!~"host-alive|prometheus-.*|alertmanager"} == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.host }}: exporter {{ $labels.job }} is not answering"
+          description: "Alloy on {{ $labels.host }} cannot scrape {{ $labels.instance }} (job {{ $labels.job }})."
+
+      # network mounts (cifs/nfs) are excluded: they alert on the host that owns the disk
+      - alert: HostDiskAlmostFull
+        expr: |
+          (1 - node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs|nsfs|fuse.*|cifs|smb.*|nfs.*"}
+             / node_filesystem_size_bytes{fstype!~"tmpfs|overlay|squashfs|nsfs|fuse.*|cifs|smb.*|nfs.*"}) * 100 > 90
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.host }}: {{ $labels.mountpoint }} is {{ humanize $value }}% full"
+
+      - alert: HostMemoryLow
+        expr: node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes * 100 < 5
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.host }}: only {{ humanize $value }}% memory available"
+
+  - name: monitoring
+    rules:
+      - alert: PrometheusDown
+        expr: up{job=~"prometheus-.*"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Prometheus on {{ $labels.host }} is not answering"
+          description: "Metrics are only being stored on the other Prometheus."
+
+      - alert: PrometheusRejectingSamples
+        expr: |
+          increase(prometheus_tsdb_out_of_bound_samples_total[15m]) > 0
+            or increase(prometheus_tsdb_too_old_samples_total[15m]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "Prometheus on {{ $labels.host }} is rejecting late samples (gap will not back-fill)"
+
+  - name: certificates
+    rules:
+      # From db1's Alloy, which connects to every name in alloy/certificate-targets.txt every minute.
+      - alert: CertificateExpiringSoon
+        expr: (probe_ssl_earliest_cert_expiry{job="certificates"} - time()) / 86400 < 30
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "Certificate for {{ $labels.certificate }} expires in {{ humanize $value }} days"
+          description: "Renew it (Amfileon CA, /srv/docker/proxy) and replace it in nginx-proxy before it expires."
+
+      - alert: CertificateExpiringVerySoon
+        expr: (probe_ssl_earliest_cert_expiry{job="certificates"} - time()) / 86400 < 7
+        for: 1h
+        labels:
+          severity: critical
+        annotations:
+          summary: "Certificate for {{ $labels.certificate }} expires in {{ humanize $value }} days"
+
+      - alert: CertificateCheckFailed
+        expr: probe_success{job="certificates"} == 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.certificate }}: no valid certificate on port 443"
+          description: "Expired, not trusted by the Amfileon CA, issued for another name, or the service is unreachable."

@@ -1,0 +1,75 @@
+// Same on every host. Host-specific exporters are in host.alloy (copied from deploy/alloy/hosts/).
+//
+// Alloy runs as a container on dockprom's `monitor-net` network, so it scrapes the exporters that
+// already run there by container name — dockprom itself is not changed.
+// Every sample is pushed to BOTH Prometheus instances; each endpoint has its own queue, so one
+// being down never blocks the other, and the WAL re-sends what it missed for up to 24h.
+
+prometheus.remote_write "both" {
+  // Every series gets host="<this machine>" (from AMF_HOST in .env).
+  external_labels = { host = sys.env("AMF_HOST") }
+
+  wal {
+    max_keepalive_time = "24h"
+  }
+
+  endpoint {
+    name = "db1"
+    url  = "https://db1.prometheus.amf/api/v1/write"
+    tls_config {
+      ca_file = "/etc/alloy-ca/amfileon-ca.pem"
+    }
+    basic_auth {
+      username = "alloyuser"
+      password = sys.env("ALLOY_PASSWORD")
+    }
+  }
+
+  endpoint {
+    name = "db2"
+    url  = "https://db2.prometheus.amf/api/v1/write"
+    tls_config {
+      ca_file = "/etc/alloy-ca/amfileon-ca.pem"
+    }
+    basic_auth {
+      username = "alloyuser"
+      password = sys.env("ALLOY_PASSWORD")
+    }
+  }
+}
+
+// scaphandre (power): keep the host-level series (scaph_socket_*, scaph_domain_*, …) and drop
+// the per-process ones — 8 metrics × every process (~34k on db2/prod3) were 70 % of all series
+// and would have filled db1's disk. Used by host.alloy on hosts that run scaphandre.
+prometheus.relabel "scaphandre_host_level" {
+  forward_to = [prometheus.remote_write.both.receiver]
+
+  rule {
+    source_labels = ["__name__"]
+    regex         = "scaph_process_.*"
+    action        = "drop"
+  }
+}
+
+// Job names match dockprom's, so existing dashboards keep working.
+prometheus.scrape "nodeexporter" {
+  job_name        = "nodeexporter"
+  targets         = [{ "__address__" = "nodeexporter:9100" }]
+  scrape_interval = "15s"
+  forward_to      = [prometheus.remote_write.both.receiver]
+}
+
+prometheus.scrape "cadvisor" {
+  job_name        = "cadvisor"
+  targets         = [{ "__address__" = "cadvisor:8080" }]
+  scrape_interval = "15s"
+  forward_to      = [prometheus.remote_write.both.receiver]
+}
+
+prometheus.scrape "pushgateway" {
+  job_name        = "pushgateway"
+  targets         = [{ "__address__" = "pushgateway:9091" }]
+  honor_labels    = true
+  scrape_interval = "15s"
+  forward_to      = [prometheus.remote_write.both.receiver]
+}

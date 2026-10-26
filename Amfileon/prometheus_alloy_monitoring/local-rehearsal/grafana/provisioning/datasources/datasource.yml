@@ -1,0 +1,32 @@
+apiVersion: 1
+
+# Both Prometheus instances, reached the same way as Alloy reaches them: TLS + basic auth.
+datasources:
+  - name: Prometheus-db1
+    uid: prom-db1
+    type: prometheus
+    access: proxy
+    url: https://db1.prometheus.amf
+    isDefault: true
+    editable: false
+    basicAuth: true
+    basicAuthUser: grafana
+    jsonData:
+      tlsAuthWithCACert: true
+    secureJsonData:
+      basicAuthPassword: $GRAFANA_DS_PASSWORD
+      tlsCACert: $__file{/certs/ca.pem}
+
+  - name: Prometheus-db2
+    uid: prom-db2
+    type: prometheus
+    access: proxy
+    url: https://db2.prometheus.amf
+    editable: false
+    basicAuth: true
+    basicAuthUser: grafana
+    jsonData:
+      tlsAuthWithCACert: true
+    secureJsonData:
+      basicAuthPassword: $GRAFANA_DS_PASSWORD
+      tlsCACert: $__file{/certs/ca.pem}
