@@ -1,0 +1,319 @@
+Grafana: http://localhost:3001
+Prometheus data sources: Prometheus-db1, Prometheus-db2
+
+################ Prometheus-db1 ################
+
+== Disk usage % (avail-based, like Grafana/df)
+   nodeexporter:9100  /  /dev/md0p2  nodeexporter               8.6
+   nodeexporter:9100  /  /dev/md124p2  nodeexporter             61.6
+   nodeexporter:9100  /  /dev/md124p2  nodeexporter             95.7
+   nodeexporter:9100  /  /dev/md124p2  nodeexporter             49.4
+   nodeexporter:9100  /  /dev/md125p2  nodeexporter             61.5
+   nodeexporter:9100  /  /dev/md125p2  nodeexporter             22.6
+   nodeexporter:9100  /data  /dev/md0  nodeexporter             71
+   nodeexporter:9100  /data  /dev/md1p1  nodeexporter           61.7
+   nodeexporter:9100  /home  /dev/md124p1  nodeexporter         98.1
+   nodeexporter:9100  /home  /dev/md124p1  nodeexporter         92.5
+   nodeexporter:9100  /home  /dev/md125p1  nodeexporter         42.5
+   nodeexporter:9100  /home  /dev/md126  nodeexporter           73.7
+   nodeexporter:9100  /home/samba/sambashare  //db1.amf/sambashare  nodeexporter 98.1
+   nodeexporter:9100  /srv/data  /dev/md126  nodeexporter       41
+
+== Disk free (GB)
+   nodeexporter:9100  /  /dev/md0p2  nodeexporter               852
+   nodeexporter:9100  /  /dev/md124p2  nodeexporter             183
+   nodeexporter:9100  /  /dev/md124p2  nodeexporter             21
+   nodeexporter:9100  /  /dev/md124p2  nodeexporter             240
+   nodeexporter:9100  /  /dev/md125p2  nodeexporter             183
+   nodeexporter:9100  /  /dev/md125p2  nodeexporter             369
+   nodeexporter:9100  /data  /dev/md0  nodeexporter             2210
+   nodeexporter:9100  /data  /dev/md1p1  nodeexporter           5842
+   nodeexporter:9100  /home  /dev/md124p1  nodeexporter         273
+   nodeexporter:9100  /home  /dev/md124p1  nodeexporter         809
+   nodeexporter:9100  /home  /dev/md125p1  nodeexporter         3119
+   nodeexporter:9100  /home  /dev/md126  nodeexporter           1904
+   nodeexporter:9100  /home/samba/sambashare  //db1.amf/sambashare  nodeexporter 273
+   nodeexporter:9100  /srv/data  /dev/md126  nodeexporter       4270
+
+== Free-space change per day over 7d (GB/day, negative = filling)
+   nodeexporter:9100  /  /dev/md0p2  nodeexporter               0
+   nodeexporter:9100  /  /dev/md124p2  nodeexporter             -0.3
+   nodeexporter:9100  /  /dev/md124p2  nodeexporter             -57.2
+   nodeexporter:9100  /  /dev/md124p2  nodeexporter             -32.8
+   nodeexporter:9100  /  /dev/md125p2  nodeexporter             -0.2
+   nodeexporter:9100  /  /dev/md125p2  nodeexporter             -0.6
+   nodeexporter:9100  /data  /dev/md0  nodeexporter             -39.7
+   nodeexporter:9100  /data  /dev/md1p1  nodeexporter           -27.5
+   nodeexporter:9100  /home  /dev/md124p1  nodeexporter         101.4
+   nodeexporter:9100  /home  /dev/md124p1  nodeexporter         -94.1
+   nodeexporter:9100  /home  /dev/md125p1  nodeexporter         -1.2
+   nodeexporter:9100  /home  /dev/md126  nodeexporter           -56.7
+   nodeexporter:9100  /home/samba/sambashare  //db1.amf/sambashare  nodeexporter -94.1
+   nodeexporter:9100  /srv/data  /dev/md126  nodeexporter       50.1
+
+== Days until full at the 7d rate (only filling mounts)
+   nodeexporter:9100  /  /dev/md0p2  nodeexporter               30600.5
+   nodeexporter:9100  /  /dev/md124p2  nodeexporter             655.4
+   nodeexporter:9100  /  /dev/md124p2  nodeexporter             0.4
+   nodeexporter:9100  /  /dev/md124p2  nodeexporter             7.3
+   nodeexporter:9100  /  /dev/md125p2  nodeexporter             1506.5
+   nodeexporter:9100  /  /dev/md125p2  nodeexporter             295.9
+   nodeexporter:9100  /data  /dev/md0  nodeexporter             55.7
+   nodeexporter:9100  /data  /dev/md1p1  nodeexporter           212.5
+   nodeexporter:9100  /home  /dev/md124p1  nodeexporter         2.9
+   nodeexporter:9100  /home  /dev/md125p1  nodeexporter         2677.1
+   nodeexporter:9100  /home  /dev/md126  nodeexporter           33.6
+   nodeexporter:9100  /home/samba/sambashare  //db1.amf/sambashare  nodeexporter 2.9
+
+== Free-space change over 30d (GB, negative = filled)
+   (no data)
+
+== Inode usage %
+   nodeexporter:9100  /  /dev/md0p2  nodeexporter               1.1
+   nodeexporter:9100  /  /dev/md124p2  nodeexporter             9.7
+   nodeexporter:9100  /  /dev/md124p2  nodeexporter             9.6
+   nodeexporter:9100  /  /dev/md124p2  nodeexporter             11.3
+   nodeexporter:9100  /  /dev/md125p2  nodeexporter             4.1
+   nodeexporter:9100  /  /dev/md125p2  nodeexporter             1.3
+   nodeexporter:9100  /data  /dev/md0  nodeexporter             12.4
+   nodeexporter:9100  /data  /dev/md1p1  nodeexporter           18.6
+   nodeexporter:9100  /home  /dev/md124p1  nodeexporter         1.5
+   nodeexporter:9100  /home  /dev/md124p1  nodeexporter         16.5
+   nodeexporter:9100  /home  /dev/md125p1  nodeexporter         1.8
+   nodeexporter:9100  /home  /dev/md126  nodeexporter           4.9
+   nodeexporter:9100  /home/samba/sambashare  //db1.amf/sambashare  nodeexporter NaN
+   nodeexporter:9100  /srv/data  /dev/md126  nodeexporter       2.6
+
+== Zombie processes
+   (no data)
+
+== Processes / PID limit
+   (no data)
+
+== PID limit
+   (no data)
+
+== Load15 per CPU
+   ERROR: HTTP Error 422: Unprocessable Entity
+
+== Memory used %
+   nodeexporter:9100  nodeexporter                              10.2
+   nodeexporter:9100  nodeexporter                              27.4
+   nodeexporter:9100  nodeexporter                              28.4
+   nodeexporter:9100  nodeexporter                              26.1
+   nodeexporter:9100  nodeexporter                              15.3
+   nodeexporter:9100  nodeexporter                              35.1
+
+== Swap used %
+   nodeexporter:9100  nodeexporter                              100
+   nodeexporter:9100  nodeexporter                              19
+   nodeexporter:9100  nodeexporter                              0
+   nodeexporter:9100  nodeexporter                              43.3
+   nodeexporter:9100  nodeexporter                              60.9
+   nodeexporter:9100  nodeexporter                              3.5
+
+== OOM kills in 7d
+   nodeexporter:9100  nodeexporter                              2.0002345490793947
+   nodeexporter:9100  nodeexporter                              1.0001871757038794
+   nodeexporter:9100  nodeexporter                              0
+   nodeexporter:9100  nodeexporter                              0
+   nodeexporter:9100  nodeexporter                              0
+   nodeexporter:9100  nodeexporter                              0
+
+== Disk busy % (1h avg, top 10)
+   nodeexporter:9100  md0  nodeexporter                         98.1
+   nodeexporter:9100  md124  nodeexporter                       84.4
+   nodeexporter:9100  md124  nodeexporter                       31.1
+   nodeexporter:9100  md124p1  nodeexporter                     31.1
+   nodeexporter:9100  md124p2  nodeexporter                     84.4
+   nodeexporter:9100  nvme0n1  nodeexporter                     98.1
+   nodeexporter:9100  nvme0n1  nodeexporter                     84.3
+   nodeexporter:9100  nvme10n1  nodeexporter                    26.5
+   nodeexporter:9100  nvme1n1  nodeexporter                     84.3
+   nodeexporter:9100  nvme8n1  nodeexporter                     26.2
+
+== Scrape targets down
+   (no data)
+
+== Top 10 containers by memory (GB, cAdvisor)
+   cadvisor:8080  conda-aca  cadvisor                           24.32
+   cadvisor:8080  conda-ade  cadvisor                           91.22
+   cadvisor:8080  conda-aha  cadvisor                           50.5
+   cadvisor:8080  conda-jba  cadvisor                           66.8
+   cadvisor:8080  conda-jba  cadvisor                           61.5
+   cadvisor:8080  conda-rgo  cadvisor                           57.62
+   cadvisor:8080  conda-she  cadvisor                           36.12
+   cadvisor:8080  conda-ttr  cadvisor                           26.92
+   cadvisor:8080  gitlab-ee  cadvisor                           33.44
+   cadvisor:8080  postgres  cadvisor                            36.46
+
+== Top 10 containers by CPU cores (1h, cAdvisor)
+   cadvisor:8080  cadvisor  cadvisor                            3.09
+   cadvisor:8080  cadvisor  cadvisor                            1.93
+   cadvisor:8080  cadvisor  cadvisor                            1.59
+   cadvisor:8080  cadvisor  cadvisor                            1.33
+   cadvisor:8080  conda-ade  cadvisor                           1.74
+   cadvisor:8080  conda-jba  cadvisor                           10.86
+   cadvisor:8080  conda-she  cadvisor                           2.67
+   cadvisor:8080  gpu1.dev.ch.amf  cadvisor                     2.28
+   cadvisor:8080  postgres  cadvisor                            3.33
+   cadvisor:8080  postgres-develop  cadvisor                    1.48
+
+################ Prometheus-db2 ################
+
+== Disk usage % (avail-based, like Grafana/df)
+   nodeexporter:9100  /  /dev/md0p2  nodeexporter               8.6
+   nodeexporter:9100  /  /dev/md124p2  nodeexporter             61.6
+   nodeexporter:9100  /  /dev/md124p2  nodeexporter             95.7
+   nodeexporter:9100  /  /dev/md124p2  nodeexporter             49.4
+   nodeexporter:9100  /  /dev/md125p2  nodeexporter             61.5
+   nodeexporter:9100  /  /dev/md125p2  nodeexporter             22.6
+   nodeexporter:9100  /data  /dev/md0  nodeexporter             71
+   nodeexporter:9100  /data  /dev/md1p1  nodeexporter           61.7
+   nodeexporter:9100  /home  /dev/md124p1  nodeexporter         98.1
+   nodeexporter:9100  /home  /dev/md124p1  nodeexporter         92.5
+   nodeexporter:9100  /home  /dev/md125p1  nodeexporter         42.5
+   nodeexporter:9100  /home  /dev/md126  nodeexporter           73.7
+   nodeexporter:9100  /home/samba/sambashare  //db1.amf/sambashare  nodeexporter 98.1
+   nodeexporter:9100  /srv/data  /dev/md126  nodeexporter       41
+
+== Disk free (GB)
+   nodeexporter:9100  /  /dev/md0p2  nodeexporter               852
+   nodeexporter:9100  /  /dev/md124p2  nodeexporter             183
+   nodeexporter:9100  /  /dev/md124p2  nodeexporter             21
+   nodeexporter:9100  /  /dev/md124p2  nodeexporter             240
+   nodeexporter:9100  /  /dev/md125p2  nodeexporter             183
+   nodeexporter:9100  /  /dev/md125p2  nodeexporter             369
+   nodeexporter:9100  /data  /dev/md0  nodeexporter             2210
+   nodeexporter:9100  /data  /dev/md1p1  nodeexporter           5842
+   nodeexporter:9100  /home  /dev/md124p1  nodeexporter         273
+   nodeexporter:9100  /home  /dev/md124p1  nodeexporter         809
+   nodeexporter:9100  /home  /dev/md125p1  nodeexporter         3119
+   nodeexporter:9100  /home  /dev/md126  nodeexporter           1904
+   nodeexporter:9100  /home/samba/sambashare  //db1.amf/sambashare  nodeexporter 273
+   nodeexporter:9100  /srv/data  /dev/md126  nodeexporter       4270
+
+== Free-space change per day over 7d (GB/day, negative = filling)
+   nodeexporter:9100  /  /dev/md0p2  nodeexporter               0
+   nodeexporter:9100  /  /dev/md124p2  nodeexporter             -0.3
+   nodeexporter:9100  /  /dev/md124p2  nodeexporter             -57.2
+   nodeexporter:9100  /  /dev/md124p2  nodeexporter             -32.8
+   nodeexporter:9100  /  /dev/md125p2  nodeexporter             -0.2
+   nodeexporter:9100  /  /dev/md125p2  nodeexporter             -0.6
+   nodeexporter:9100  /data  /dev/md0  nodeexporter             -39.7
+   nodeexporter:9100  /data  /dev/md1p1  nodeexporter           -27.5
+   nodeexporter:9100  /home  /dev/md124p1  nodeexporter         101.4
+   nodeexporter:9100  /home  /dev/md124p1  nodeexporter         -94.1
+   nodeexporter:9100  /home  /dev/md125p1  nodeexporter         -1.2
+   nodeexporter:9100  /home  /dev/md126  nodeexporter           -56.7
+   nodeexporter:9100  /home/samba/sambashare  //db1.amf/sambashare  nodeexporter -94.1
+   nodeexporter:9100  /srv/data  /dev/md126  nodeexporter       50.1
+
+== Days until full at the 7d rate (only filling mounts)
+   nodeexporter:9100  /  /dev/md0p2  nodeexporter               30600.5
+   nodeexporter:9100  /  /dev/md124p2  nodeexporter             655.4
+   nodeexporter:9100  /  /dev/md124p2  nodeexporter             0.4
+   nodeexporter:9100  /  /dev/md124p2  nodeexporter             7.3
+   nodeexporter:9100  /  /dev/md125p2  nodeexporter             1506.5
+   nodeexporter:9100  /  /dev/md125p2  nodeexporter             295.9
+   nodeexporter:9100  /data  /dev/md0  nodeexporter             55.7
+   nodeexporter:9100  /data  /dev/md1p1  nodeexporter           212.5
+   nodeexporter:9100  /home  /dev/md124p1  nodeexporter         2.9
+   nodeexporter:9100  /home  /dev/md125p1  nodeexporter         2677.1
+   nodeexporter:9100  /home  /dev/md126  nodeexporter           33.6
+   nodeexporter:9100  /home/samba/sambashare  //db1.amf/sambashare  nodeexporter 2.9
+
+== Free-space change over 30d (GB, negative = filled)
+   (no data)
+
+== Inode usage %
+   nodeexporter:9100  /  /dev/md0p2  nodeexporter               1.1
+   nodeexporter:9100  /  /dev/md124p2  nodeexporter             9.7
+   nodeexporter:9100  /  /dev/md124p2  nodeexporter             9.6
+   nodeexporter:9100  /  /dev/md124p2  nodeexporter             11.3
+   nodeexporter:9100  /  /dev/md125p2  nodeexporter             4.1
+   nodeexporter:9100  /  /dev/md125p2  nodeexporter             1.3
+   nodeexporter:9100  /data  /dev/md0  nodeexporter             12.4
+   nodeexporter:9100  /data  /dev/md1p1  nodeexporter           18.6
+   nodeexporter:9100  /home  /dev/md124p1  nodeexporter         1.5
+   nodeexporter:9100  /home  /dev/md124p1  nodeexporter         16.5
+   nodeexporter:9100  /home  /dev/md125p1  nodeexporter         1.8
+   nodeexporter:9100  /home  /dev/md126  nodeexporter           4.9
+   nodeexporter:9100  /home/samba/sambashare  //db1.amf/sambashare  nodeexporter NaN
+   nodeexporter:9100  /srv/data  /dev/md126  nodeexporter       2.6
+
+== Zombie processes
+   (no data)
+
+== Processes / PID limit
+   (no data)
+
+== PID limit
+   (no data)
+
+== Load15 per CPU
+   ERROR: HTTP Error 422: Unprocessable Entity
+
+== Memory used %
+   nodeexporter:9100  nodeexporter                              10.2
+   nodeexporter:9100  nodeexporter                              27.4
+   nodeexporter:9100  nodeexporter                              28.4
+   nodeexporter:9100  nodeexporter                              26.1
+   nodeexporter:9100  nodeexporter                              15.3
+   nodeexporter:9100  nodeexporter                              35.1
+
+== Swap used %
+   nodeexporter:9100  nodeexporter                              100
+   nodeexporter:9100  nodeexporter                              19
+   nodeexporter:9100  nodeexporter                              0
+   nodeexporter:9100  nodeexporter                              43.3
+   nodeexporter:9100  nodeexporter                              60.9
+   nodeexporter:9100  nodeexporter                              3.5
+
+== OOM kills in 7d
+   nodeexporter:9100  nodeexporter                              2.0002345490793947
+   nodeexporter:9100  nodeexporter                              1.000117082308863
+   nodeexporter:9100  nodeexporter                              0
+   nodeexporter:9100  nodeexporter                              0
+   nodeexporter:9100  nodeexporter                              0
+   nodeexporter:9100  nodeexporter                              0
+
+== Disk busy % (1h avg, top 10)
+   nodeexporter:9100  md0  nodeexporter                         98.1
+   nodeexporter:9100  md124  nodeexporter                       84.4
+   nodeexporter:9100  md124  nodeexporter                       31.1
+   nodeexporter:9100  md124p1  nodeexporter                     31.1
+   nodeexporter:9100  md124p2  nodeexporter                     84.4
+   nodeexporter:9100  nvme0n1  nodeexporter                     98.1
+   nodeexporter:9100  nvme0n1  nodeexporter                     84.3
+   nodeexporter:9100  nvme10n1  nodeexporter                    26.5
+   nodeexporter:9100  nvme1n1  nodeexporter                     84.3
+   nodeexporter:9100  nvme8n1  nodeexporter                     26.2
+
+== Scrape targets down
+   (no data)
+
+== Top 10 containers by memory (GB, cAdvisor)
+   cadvisor:8080  conda-aca  cadvisor                           24.32
+   cadvisor:8080  conda-ade  cadvisor                           91.22
+   cadvisor:8080  conda-aha  cadvisor                           50.5
+   cadvisor:8080  conda-jba  cadvisor                           66.8
+   cadvisor:8080  conda-jba  cadvisor                           61.5
+   cadvisor:8080  conda-rgo  cadvisor                           57.62
+   cadvisor:8080  conda-she  cadvisor                           36.12
+   cadvisor:8080  conda-ttr  cadvisor                           26.92
+   cadvisor:8080  gitlab-ee  cadvisor                           33.44
+   cadvisor:8080  postgres  cadvisor                            36.46
+
+== Top 10 containers by CPU cores (1h, cAdvisor)
+   cadvisor:8080  cadvisor  cadvisor                            3.09
+   cadvisor:8080  cadvisor  cadvisor                            1.93
+   cadvisor:8080  cadvisor  cadvisor                            1.59
+   cadvisor:8080  cadvisor  cadvisor                            1.33
+   cadvisor:8080  conda-ade  cadvisor                           1.74
+   cadvisor:8080  conda-jba  cadvisor                           10.86
+   cadvisor:8080  conda-she  cadvisor                           2.67
+   cadvisor:8080  gpu1.dev.ch.amf  cadvisor                     2.28
+   cadvisor:8080  postgres  cadvisor                            3.33
+   cadvisor:8080  postgres-develop  cadvisor                    1.48
+

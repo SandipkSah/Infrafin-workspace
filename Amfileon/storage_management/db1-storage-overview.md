@@ -1,6 +1,6 @@
 # db1 `/data` Storage Overview
 
-As of 2026-10-02 · Sandip Sah
+As of 2026-10-02
 
 > **Status:** analysis only. Nothing has been deleted or changed. Every action below is a **proposal**
 > for its owner to approve.

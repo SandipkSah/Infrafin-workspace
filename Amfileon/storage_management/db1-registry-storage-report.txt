@@ -1,6 +1,6 @@
 db1 /data: GitLab Container Registry Storage Report
 
-As of 2026-10-02 · Sandip Sah
+As of 2026-10-02
 
 Summary
 
