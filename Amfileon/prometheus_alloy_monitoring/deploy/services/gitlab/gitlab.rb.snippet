@@ -1,0 +1,16 @@
+# ── Amfileon monitoring (Alloy on db1) ── source: prometheus_alloy_monitoring/deploy/services/gitlab/gitlab.rb.snippet
+# Appended to /etc/gitlab/gitlab.rb (2026-10); move into GITLAB_OMNIBUS_CONFIG at the next planned update.
+# Opens GitLab's own metrics ports INSIDE the container, so Alloy can read them over the Docker
+# network (proxy_network). None of these ports is published on the host (compose `ports:` stays 22 and 80), and
+# nginx-proxy only forwards to port 80, so they are not reachable from the LAN or via gitlab.amf.
+# Metrics contain counters only (requests, job queues, workers) — no repository or user data.
+puma['exporter_enabled'] = true                      # Puma workers/threads        → :8083/metrics
+puma['exporter_address'] = '0.0.0.0'
+puma['exporter_port'] = 8083
+gitlab_workhorse['prometheus_listen_addr'] = '0.0.0.0:9229'   # HTTP requests by route/status → :9229/metrics
+sidekiq['metrics_enabled'] = true                    # background jobs processed/failed → :8082/metrics
+sidekiq['listen_address'] = '0.0.0.0'
+sidekiq['listen_port'] = 8082
+gitlab_exporter['enable'] = true                     # Sidekiq queue sizes/latency  → :9168/sidekiq
+gitlab_exporter['listen_address'] = '0.0.0.0'
+gitlab_exporter['listen_port'] = '9168'

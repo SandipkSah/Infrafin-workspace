@@ -13,6 +13,7 @@ case "$HOST" in
   cpu2) IP=10.10.10.31; JOBS="nodeexporter cadvisor scaphandre" ;;
   gpu1) IP=10.10.10.40; JOBS="nodeexporter cadvisor scaphandre nvidia_dcg_export" ;;
   prod3) IP=10.10.10.13; JOBS="nodeexporter cadvisor nginx scaphandre" ;;
+  prod4) IP=10.10.10.14; JOBS="nodeexporter cadvisor nginx scaphandre" ;;
   *) echo "unknown host: $HOST" >&2; exit 1 ;;
 esac
 CA=ca/amfileon-ca.pem

@@ -315,7 +315,7 @@
             "type": "prometheus",
             "uid": "${ds}"
           },
-          "expr": "max by (host) (100 * (1 - node_filesystem_avail_bytes{job=\"nodeexporter\", fstype=~\"ext4|xfs|btrfs|zfs\", mountpoint!~\"/boot.*\"} / node_filesystem_size_bytes{job=\"nodeexporter\", fstype=~\"ext4|xfs|btrfs|zfs\", mountpoint!~\"/boot.*\"}))",
+          "expr": "max by (host) (100 * (1 - node_filesystem_avail_bytes{job=\"nodeexporter\", fstype=~\"ext4|xfs|btrfs|zfs|ntfs\", mountpoint!~\"/boot.*\"} / node_filesystem_size_bytes{job=\"nodeexporter\", fstype=~\"ext4|xfs|btrfs|zfs|ntfs\", mountpoint!~\"/boot.*\"}))",
           "legendFormat": "disk",
           "refId": "C",
           "range": false,
@@ -815,6 +815,36 @@
                 }
               }
             ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "prod4"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#6250d6"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "prod2"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#e34948"
+                }
+              }
+            ]
           }
         ]
       },
@@ -976,6 +1006,36 @@
                 "value": {
                   "mode": "fixed",
                   "fixedColor": "#008300"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "prod4"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#6250d6"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "prod2"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#e34948"
                 }
               }
             ]
@@ -1141,6 +1201,36 @@
                 }
               }
             ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "prod4"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#6250d6"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "prod2"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#e34948"
+                }
+              }
+            ]
           }
         ]
       },
@@ -1184,7 +1274,7 @@
             "type": "prometheus",
             "uid": "${ds}"
           },
-          "expr": "sort_desc(100 * (1 - node_filesystem_avail_bytes{job=\"nodeexporter\", fstype=~\"ext4|xfs|btrfs|zfs\", mountpoint!~\"/boot.*\"} / node_filesystem_size_bytes{job=\"nodeexporter\", fstype=~\"ext4|xfs|btrfs|zfs\", mountpoint!~\"/boot.*\"}))",
+          "expr": "sort_desc(100 * (1 - node_filesystem_avail_bytes{job=\"nodeexporter\", fstype=~\"ext4|xfs|btrfs|zfs|ntfs\", mountpoint!~\"/boot.*\"} / node_filesystem_size_bytes{job=\"nodeexporter\", fstype=~\"ext4|xfs|btrfs|zfs|ntfs\", mountpoint!~\"/boot.*\"}))",
           "legendFormat": "{{host}}  {{mountpoint}}",
           "refId": "A",
           "range": false,
@@ -1277,6 +1367,39 @@
       "title": "PostgreSQL",
       "type": "link",
       "url": "/d/amf-postgres?${__url_time_range}&var-ds=${ds}",
+      "icon": "dashboard",
+      "asDropdown": false,
+      "targetBlank": false,
+      "keepTime": false,
+      "includeVars": false,
+      "tooltip": ""
+    },
+    {
+      "title": "ClickHouse",
+      "type": "link",
+      "url": "/d/amf-clickhouse?${__url_time_range}&var-ds=${ds}",
+      "icon": "dashboard",
+      "asDropdown": false,
+      "targetBlank": false,
+      "keepTime": false,
+      "includeVars": false,
+      "tooltip": ""
+    },
+    {
+      "title": "Redis",
+      "type": "link",
+      "url": "/d/amf-redis?${__url_time_range}&var-ds=${ds}",
+      "icon": "dashboard",
+      "asDropdown": false,
+      "targetBlank": false,
+      "keepTime": false,
+      "includeVars": false,
+      "tooltip": ""
+    },
+    {
+      "title": "GitLab",
+      "type": "link",
+      "url": "/d/amf-gitlab?${__url_time_range}&var-ds=${ds}",
       "icon": "dashboard",
       "asDropdown": false,
       "targetBlank": false,

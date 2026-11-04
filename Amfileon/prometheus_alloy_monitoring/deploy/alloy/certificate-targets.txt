@@ -1,4 +1,4 @@
-# HTTPS names whose certificates db1's Alloy checks every minute (port 443, verified
+# HTTPS names whose certificates cpu2's Alloy checks every minute (port 443, verified
 # against the Amfileon CA, exactly like a client). One name per line; then run
 #   python3 alloy/gen_certificates.py   and re-stage db1's Alloy.
 #
@@ -46,6 +46,7 @@ gpu1.dev.ch.amf
 gpu1.dev.chproxy.amf
 gpu1.minio.amf
 gpu1.s3.amf
+grafana.amf
 grafana.cpu1.amf
 grafana.cpu2.amf
 grafana.db1.amf

@@ -20,6 +20,7 @@ groups:
         labels:
           severity: critical
         annotations:
+          dashboard: "https://grafana.amf/d/amf-host?var-host={{ $labels.host }}"
           summary: "{{ $labels.host }} is down (or its Alloy agent is)"
           description: "db1 cannot reach Alloy on {{ $labels.host }} ({{ $labels.instance }}) for 2 minutes."
 
@@ -29,6 +30,7 @@ groups:
         labels:
           severity: warning
         annotations:
+          dashboard: "https://grafana.amf/d/amf-host?var-host={{ $labels.host }}"
           summary: "{{ $labels.host }}: exporter {{ $labels.job }} is not answering"
           description: "Alloy on {{ $labels.host }} cannot scrape {{ $labels.instance }} (job {{ $labels.job }})."
 
@@ -41,6 +43,7 @@ groups:
         labels:
           severity: warning
         annotations:
+          dashboard: "https://grafana.amf/d/amf-host?var-host={{ $labels.host }}"
           summary: "{{ $labels.host }}: {{ $labels.mountpoint }} is {{ humanize $value }}% full"
 
       - alert: HostMemoryLow
@@ -49,6 +52,7 @@ groups:
         labels:
           severity: warning
         annotations:
+          dashboard: "https://grafana.amf/d/amf-host?var-host={{ $labels.host }}"
           summary: "{{ $labels.host }}: only {{ humanize $value }}% memory available"
 
   - name: monitoring
@@ -59,6 +63,7 @@ groups:
         labels:
           severity: critical
         annotations:
+          dashboard: "https://grafana.amf/d/amf-monitoring"
           summary: "Prometheus on {{ $labels.host }} is not answering"
           description: "Metrics are only being stored on the other Prometheus."
 
@@ -69,17 +74,20 @@ groups:
         labels:
           severity: warning
         annotations:
+          dashboard: "https://grafana.amf/d/amf-monitoring"
           summary: "Prometheus on {{ $labels.host }} is rejecting late samples (gap will not back-fill)"
 
   - name: certificates
     rules:
-      # From db1's Alloy, which connects to every name in alloy/certificate-targets.txt every minute.
+      # From cpu2's Alloy (in no service network, so Docker DNS can't shadow names), every name in
+      # alloy/certificate-targets.txt every minute.
       - alert: CertificateExpiringSoon
         expr: (probe_ssl_earliest_cert_expiry{job="certificates"} - time()) / 86400 < 30
         for: 1h
         labels:
           severity: warning
         annotations:
+          dashboard: "https://grafana.amf/d/amf-certificates"
           summary: "Certificate for {{ $labels.certificate }} expires in {{ humanize $value }} days"
           description: "Renew it (Amfileon CA, /srv/docker/proxy) and replace it in nginx-proxy before it expires."
 
@@ -89,6 +97,7 @@ groups:
         labels:
           severity: critical
         annotations:
+          dashboard: "https://grafana.amf/d/amf-certificates"
           summary: "Certificate for {{ $labels.certificate }} expires in {{ humanize $value }} days"
 
       - alert: CertificateCheckFailed
@@ -97,5 +106,70 @@ groups:
         labels:
           severity: warning
         annotations:
+          dashboard: "https://grafana.amf/d/amf-certificates"
           summary: "{{ $labels.certificate }}: no valid certificate on port 443"
           description: "Expired, not trusted by the Amfileon CA, issued for another name, or the service is unreachable."
+
+  # ClickHouse / Redis / GitLab (collected by Alloy, see deploy/alloy/service-targets.txt). Silent
+  # until a target is switched on there. A ClickHouse or GitLab metrics port that stops answering
+  # fires ExporterDown; Redis is checked by Alloy's own exporter, so it needs RedisDown.
+  # Severity: critical for production, warning for staging.
+  - name: services
+    rules:
+      - alert: RedisDown
+        expr: redis_up{job="redis"} == 0
+        for: 2m
+        labels:
+          severity: '{{ if eq $labels.cluster "staging" }}warning{{ else }}critical{{ end }}'
+        annotations:
+          dashboard: "https://grafana.amf/d/amf-redis"
+          summary: "Redis {{ $labels.redis }} on {{ $labels.host }} is not answering"
+          description: "Alloy's redis exporter cannot connect or log in (wrong password in /srv/docker/alloy/redis.env?)."
+
+      - alert: RedisReplicationBroken
+        expr: redis_master_link_up{job="redis"} == 0
+        for: 5m
+        labels:
+          severity: '{{ if eq $labels.cluster "staging" }}warning{{ else }}critical{{ end }}'
+        annotations:
+          dashboard: "https://grafana.amf/d/amf-redis"
+          summary: "Redis replica {{ $labels.redis }} on {{ $labels.host }} has lost its master"
+
+      - alert: RedisMemoryAlmostFull
+        expr: redis_memory_max_bytes{job="redis"} > 0 and redis_memory_used_bytes{job="redis"} / redis_memory_max_bytes{job="redis"} > 0.9
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          dashboard: "https://grafana.amf/d/amf-redis"
+          summary: "Redis {{ $labels.redis }} on {{ $labels.host }} uses {{ $value | humanizePercentage }} of maxmemory"
+          description: "Above maxmemory Redis evicts keys or rejects writes, depending on its policy."
+
+      - alert: ClickHouseReadonlyReplica
+        expr: ClickHouseMetrics_ReadonlyReplica{job="clickhouse"} > 0
+        for: 5m
+        labels:
+          severity: '{{ if eq $labels.cluster "staging" }}warning{{ else }}critical{{ end }}'
+        annotations:
+          dashboard: "https://grafana.amf/d/amf-clickhouse"
+          summary: "ClickHouse {{ $labels.clickhouse }}: {{ $value }} replicated table(s) read-only"
+          description: "Usually lost connection to ClickHouse Keeper: inserts into these tables fail."
+
+      - alert: ClickHouseTooManyParts
+        expr: ClickHouseAsyncMetrics_MaxPartCountForPartition{job="clickhouse"} > 500
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          dashboard: "https://grafana.amf/d/amf-clickhouse"
+          summary: "ClickHouse {{ $labels.clickhouse }}: {{ $value }} parts in one partition"
+          description: "Merges are not keeping up with inserts (too many small inserts?). ClickHouse slows inserts down at 1000 parts and rejects them at 3000."
+
+      - alert: ClickHouseReplicationLag
+        expr: ClickHouseAsyncMetrics_ReplicasMaxAbsoluteDelay{job="clickhouse"} > 300
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          dashboard: "https://grafana.amf/d/amf-clickhouse"
+          summary: "ClickHouse {{ $labels.clickhouse }} is {{ humanizeDuration $value }} behind its replicas"

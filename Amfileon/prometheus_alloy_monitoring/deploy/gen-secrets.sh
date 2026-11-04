@@ -6,6 +6,7 @@
 #   prometheus-db1.env  → /srv/docker/prometheus/.env on db1   (hashes + grafana password)
 #   alloy.env       → /srv/docker/alloy/.env on every host        (ALLOY_PASSWORD)
 #   grafana.env     → for the Grafana datasources on db1          (GRAFANA_PROMETHEUS_PASSWORD)
+#   grafana-admin.env → admin login of https://grafana.amf        (GRAFANA_ADMIN_PASSWORD)
 #
 # Nothing is printed. Afterwards store the two passwords (alloy.env, grafana.env) in Infisical /
 # your password manager. Re-running keeps existing passwords.
@@ -17,6 +18,7 @@ mkdir -p secrets && chmod 700 secrets
 newpw() { openssl rand -base64 24 | tr -d '/+=\n'; }
 [ -f secrets/alloy.env ]   || printf 'ALLOY_PASSWORD=%s\n' "$(newpw)" > secrets/alloy.env
 [ -f secrets/grafana.env ] || printf 'GRAFANA_PROMETHEUS_PASSWORD=%s\n' "$(newpw)" > secrets/grafana.env
+[ -f secrets/grafana-admin.env ] || printf 'GRAFANA_ADMIN_PASSWORD=%s\n' "$(newpw)" > secrets/grafana-admin.env
 grep -q '^ALLOY_HTTP_PASSWORD=' secrets/alloy.env || printf 'ALLOY_HTTP_PASSWORD=%s\n' "$(newpw)" >> secrets/alloy.env
 
 # Read the passwords back without echoing them.
@@ -41,5 +43,5 @@ EOF
   > secrets/prometheus-db1.env
 
 unset alloy_pw grafana_pw
-echo "Wrote deploy/secrets/{prometheus.env,prometheus-db1.env,alloy.env,grafana.env}."
-echo "Store the passwords from alloy.env and grafana.env in Infisical / your password manager."
+echo "Wrote deploy/secrets/{prometheus.env,prometheus-db1.env,alloy.env,grafana.env,grafana-admin.env}."
+echo "Store the passwords from alloy.env, grafana.env and grafana-admin.env in Infisical / your password manager."

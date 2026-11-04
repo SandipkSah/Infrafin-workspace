@@ -1,0 +1,23 @@
+<?xml version="1.0"?>
+<!-- Base keeper config (single node). setup.sh adds the <prometheus> block with the code of
+     deploy/services/enable-clickhouse-metrics.sh, exactly as on the servers. -->
+<clickhouse>
+    <listen_host>0.0.0.0</listen_host>
+    <logger>
+        <level>warning</level>
+        <console>1</console>
+    </logger>
+    <keeper_server>
+        <tcp_port>9181</tcp_port>
+        <server_id>1</server_id>
+        <log_storage_path>/var/lib/clickhouse-keeper/coordination/log</log_storage_path>
+        <snapshot_storage_path>/var/lib/clickhouse-keeper/coordination/snapshots</snapshot_storage_path>
+        <raft_configuration>
+            <server>
+                <id>1</id>
+                <hostname>localhost</hostname>
+                <port>9234</port>
+            </server>
+        </raft_configuration>
+    </keeper_server>
+</clickhouse>

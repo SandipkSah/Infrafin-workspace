@@ -223,7 +223,7 @@
             "type": "prometheus",
             "uid": "${ds}"
           },
-          "expr": "max(100 * (1 - node_filesystem_avail_bytes{job=\"nodeexporter\", fstype=~\"ext4|xfs|btrfs|zfs\", mountpoint!~\"/boot.*\", host=\"$host\"} / node_filesystem_size_bytes{job=\"nodeexporter\", fstype=~\"ext4|xfs|btrfs|zfs\", mountpoint!~\"/boot.*\", host=\"$host\"}))",
+          "expr": "max(100 * (1 - node_filesystem_avail_bytes{job=\"nodeexporter\", fstype=~\"ext4|xfs|btrfs|zfs|ntfs\", mountpoint!~\"/boot.*\", host=\"$host\"} / node_filesystem_size_bytes{job=\"nodeexporter\", fstype=~\"ext4|xfs|btrfs|zfs|ntfs\", mountpoint!~\"/boot.*\", host=\"$host\"}))",
           "legendFormat": "",
           "refId": "A",
           "range": true,
@@ -750,7 +750,7 @@
             "type": "prometheus",
             "uid": "${ds}"
           },
-          "expr": "max by (mountpoint, device) (node_filesystem_size_bytes{job=\"nodeexporter\", fstype=~\"ext4|xfs|btrfs|zfs\", mountpoint!~\"/boot.*\", host=\"$host\"})",
+          "expr": "max by (mountpoint, device) (node_filesystem_size_bytes{job=\"nodeexporter\", fstype=~\"ext4|xfs|btrfs|zfs|ntfs\", mountpoint!~\"/boot.*\", host=\"$host\"})",
           "legendFormat": "",
           "refId": "A",
           "range": false,
@@ -762,7 +762,7 @@
             "type": "prometheus",
             "uid": "${ds}"
           },
-          "expr": "max by (mountpoint, device) (node_filesystem_size_bytes{job=\"nodeexporter\", fstype=~\"ext4|xfs|btrfs|zfs\", mountpoint!~\"/boot.*\", host=\"$host\"} - node_filesystem_avail_bytes{job=\"nodeexporter\", fstype=~\"ext4|xfs|btrfs|zfs\", mountpoint!~\"/boot.*\", host=\"$host\"})",
+          "expr": "max by (mountpoint, device) (node_filesystem_size_bytes{job=\"nodeexporter\", fstype=~\"ext4|xfs|btrfs|zfs|ntfs\", mountpoint!~\"/boot.*\", host=\"$host\"} - node_filesystem_avail_bytes{job=\"nodeexporter\", fstype=~\"ext4|xfs|btrfs|zfs|ntfs\", mountpoint!~\"/boot.*\", host=\"$host\"})",
           "legendFormat": "",
           "refId": "B",
           "range": false,
@@ -774,7 +774,7 @@
             "type": "prometheus",
             "uid": "${ds}"
           },
-          "expr": "max by (mountpoint, device) (node_filesystem_avail_bytes{job=\"nodeexporter\", fstype=~\"ext4|xfs|btrfs|zfs\", mountpoint!~\"/boot.*\", host=\"$host\"})",
+          "expr": "max by (mountpoint, device) (node_filesystem_avail_bytes{job=\"nodeexporter\", fstype=~\"ext4|xfs|btrfs|zfs|ntfs\", mountpoint!~\"/boot.*\", host=\"$host\"})",
           "legendFormat": "",
           "refId": "C",
           "range": false,
@@ -786,7 +786,7 @@
             "type": "prometheus",
             "uid": "${ds}"
           },
-          "expr": "max by (mountpoint, device) (100 * (1 - node_filesystem_avail_bytes{job=\"nodeexporter\", fstype=~\"ext4|xfs|btrfs|zfs\", mountpoint!~\"/boot.*\", host=\"$host\"} / node_filesystem_size_bytes{job=\"nodeexporter\", fstype=~\"ext4|xfs|btrfs|zfs\", mountpoint!~\"/boot.*\", host=\"$host\"}))",
+          "expr": "max by (mountpoint, device) (100 * (1 - node_filesystem_avail_bytes{job=\"nodeexporter\", fstype=~\"ext4|xfs|btrfs|zfs|ntfs\", mountpoint!~\"/boot.*\", host=\"$host\"} / node_filesystem_size_bytes{job=\"nodeexporter\", fstype=~\"ext4|xfs|btrfs|zfs|ntfs\", mountpoint!~\"/boot.*\", host=\"$host\"}))",
           "legendFormat": "",
           "refId": "D",
           "range": false,
@@ -1305,7 +1305,7 @@
     {
       "id": 18,
       "type": "row",
-      "title": "Power (scaphandre \u2014 db2, prod3)",
+      "title": "Power (scaphandre \u2014 db2, prod3, prod4)",
       "gridPos": {
         "x": 0,
         "y": 40,
@@ -1364,7 +1364,7 @@
                 }
               },
               "min": 0,
-              "noValue": "No power data for this host (db2, prod3)"
+              "noValue": "No power data for this host (db2, prod3, prod4)"
             },
             "overrides": []
           },
@@ -1763,6 +1763,39 @@
       "title": "PostgreSQL",
       "type": "link",
       "url": "/d/amf-postgres?${__url_time_range}&var-ds=${ds}",
+      "icon": "dashboard",
+      "asDropdown": false,
+      "targetBlank": false,
+      "keepTime": false,
+      "includeVars": false,
+      "tooltip": ""
+    },
+    {
+      "title": "ClickHouse",
+      "type": "link",
+      "url": "/d/amf-clickhouse?${__url_time_range}&var-ds=${ds}",
+      "icon": "dashboard",
+      "asDropdown": false,
+      "targetBlank": false,
+      "keepTime": false,
+      "includeVars": false,
+      "tooltip": ""
+    },
+    {
+      "title": "Redis",
+      "type": "link",
+      "url": "/d/amf-redis?${__url_time_range}&var-ds=${ds}",
+      "icon": "dashboard",
+      "asDropdown": false,
+      "targetBlank": false,
+      "keepTime": false,
+      "includeVars": false,
+      "tooltip": ""
+    },
+    {
+      "title": "GitLab",
+      "type": "link",
+      "url": "/d/amf-gitlab?${__url_time_range}&var-ds=${ds}",
       "icon": "dashboard",
       "asDropdown": false,
       "targetBlank": false,

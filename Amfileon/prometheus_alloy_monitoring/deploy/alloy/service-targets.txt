@@ -1,0 +1,84 @@
+# ClickHouse, Redis and GitLab instances that Alloy collects metrics from.
+# Edit this file, then run `python3 gen_services.py` (writes hosts/<host>.services.alloy,
+# hosts/<host>.compose.yaml and hosts/<host>.redis-list) and stage Alloy on that host.
+#
+# Scope (decided 2026-10-28): production + staging of Amfileon's own services. Not included: dev
+# clusters, the plain "clickhouse" projects (db1/cpu1/gpu1), app-internal Redis/ClickHouse
+# (sentry, netbox, zulip, infisical, conda) — add a line here to include one.
+#
+# Columns:
+#   host     where the instance runs (its Alloy collects it)
+#   kind     clickhouse | redis | gitlab
+#   name     container name (also the instance label: clickhouse=… / redis=…)
+#   cluster  label used by the dashboards' Cluster drop-down
+#   role     clickhouse: server|keeper (label role) · redis: server|sentinel (label kind) ·
+#            gitlab: puma|workhorse|sidekiq|exporter (job gitlab-<role>)
+#   address  clickhouse/gitlab: <container>:<port> over a Docker network (port is NOT published)
+#            redis: <host LAN IP>:<published port> (already published today) + container port after "/";
+#                   TLS-only instances: rediss://<name on its certificate>:<port>/<container port> — Alloy
+#                   resolves that name to this host (extra_hosts) and verifies it against the Amfileon CA.
+#                   Names checked 2026-10-28: production.redis.amf (production cert, DNS → prod3), redis.amf
+#                   and db1/prod3.redis.amf (staging/redis:8 cert). db1's override of production.redis.amf is
+#                   why that name's certificate check runs on prod3 (certificate-targets.txt).
+#   network  Docker network Alloy joins to reach the container ("-" = none, "?"/"host?" = can't be reached yet)
+#   on       on = collected · off = prepared, not collected yet (see deploy/services/INSTALL.md)
+#
+# host  kind        name                                                 cluster                role       address                                                   network                                   on
+
+# ── ClickHouse (needs deploy/services/enable-clickhouse-metrics.sh per container) ─────────────
+# network "host?": the container has no Docker network (host networking?) — its :9363 would sit on
+# the host behind ufw, and both db2 marketdata containers would want the same port. Left out for now.
+db1     clickhouse  db1.production.ch.amf                                production             server     db1.production.ch.amf:9363                                clickhouse-production_default             on
+db1     clickhouse  db1.production.keeper.amf                            production             keeper     db1.production.keeper.amf:9363                            clickhouse-production_default             off
+db1     clickhouse  db1.staging.ch.amf                                   staging                server     db1.staging.ch.amf:9363                                   clickhouse-staging_default                on
+db1     clickhouse  db1.staging.keeper.amf                               staging                keeper     db1.staging.keeper.amf:9363                               clickhouse-staging_default                off
+db2     clickhouse  db2.production.ch.amf                                production             server     db2.production.ch.amf:9363                                clickhouse-production_default             on
+db2     clickhouse  db2.production.keeper.amf                            production             keeper     db2.production.keeper.amf:9363                            clickhouse-production_default             off
+db2     clickhouse  db2.staging.ch.amf                                   staging                server     db2.staging.ch.amf:9363                                   clickhouse-staging_default                on
+db2     clickhouse  db2.staging.keeper.amf                               staging                keeper     db2.staging.keeper.amf:9363                               clickhouse-staging_default                off
+db2     clickhouse  db2.production.marketdata.ch.amf                     marketdata-production  server     db2.production.marketdata.ch.amf:9363                     clickhouse-marketdata-production_default  on
+db2     clickhouse  db2.production.marketdata.keeper.amf                 marketdata-production  keeper     db2.production.marketdata.keeper.amf:9363                 host?                                     off
+db2     clickhouse  db2.staging.marketdata.ch.amf                        marketdata-staging     server     db2.staging.marketdata.ch.amf:9363                        host?                                     off
+db2     clickhouse  db2.staging.marketdata.keeper.amf                    marketdata-staging     keeper     db2.staging.marketdata.keeper.amf:9363                    clickhouse-marketdata-staging_default     off
+prod3   clickhouse  prod3.production.ch.amf                              production             server     prod3.production.ch.amf:9363                              clickhouse-production_default             on
+prod3   clickhouse  prod3.production.keeper.amf                          production             keeper     prod3.production.keeper.amf:9363                          clickhouse-production_default             off
+prod3   clickhouse  prod3.production.marketdata.ch.amf                   marketdata-production  server     prod3.production.marketdata.ch.amf:9363                   clickhouse-marketdata-production_default  on
+# container is named with a leftover recreate prefix; Docker DNS resolves the container name as is
+prod3   clickhouse  bc44f8ccf9a5_prod3.production.marketdata.keeper.amf  marketdata-production  keeper     bc44f8ccf9a5_prod3.production.marketdata.keeper.amf:9363  clickhouse-marketdata-production_default  off
+prod4   clickhouse  prod4.production.marketdata.ch.amf                   marketdata-production  server     prod4.production.marketdata.ch.amf:9363                   clickhouse-marketdata-production_default  on
+prod4   clickhouse  prod4.staging.ch.amf                                 staging                server     prod4.staging.ch.amf:9363                                 clickhouse-staging_default                on
+prod4   clickhouse  prod4.staging.marketdata.ch.amf                      marketdata-staging     server     prod4.staging.marketdata.ch.amf:9363                      clickhouse-marketdata-staging_default     on
+prod4   clickhouse  prod4.production.marketdata.keeper.amf               marketdata-production  keeper     prod4.production.marketdata.keeper.amf:9363               clickhouse-marketdata-production_default  off
+prod4   clickhouse  prod4.staging.keeper.amf                             staging                keeper     prod4.staging.keeper.amf:9363                             clickhouse-staging_default                off
+prod4   clickhouse  prod4.staging.marketdata.keeper.amf                  marketdata-staging     keeper     prod4.staging.marketdata.keeper.amf:9363                  clickhouse-marketdata-staging_default     off
+
+# ── Redis (Alloy's built-in exporter; passwords via deploy/services/fill-redis-env.sh) ──────────
+db1     redis       redis-production-db1                                 production             server     rediss://production.redis.amf:46379/46379                 -                                         on
+db1     redis       redis-sentinel-production-db1                        production             sentinel   rediss://production.redis.amf:46380/46380                 -                                         on
+db1     redis       redis-staging                                        staging                server     rediss://db1.redis.amf:26379/26379                        -                                         on
+db1     redis       redis-sentinel-staging                               staging                sentinel   rediss://db1.redis.amf:26380/26380                        -                                         on
+db2     redis       redis-staging                                        staging                server     rediss://redis.amf:26379/26379                            -                                         on
+db2     redis       redis-sentinel-staging                               staging                sentinel   rediss://redis.amf:26380/26380                            -                                         on
+db2     redis       redis-amfmessages                                    amfmessages            server     10.10.10.21:6391/6379                                     -                                         on
+prod3   redis       redis-production-prod3                               production             server     rediss://production.redis.amf:46379/46379                 -                                         on
+prod3   redis       redis-sentinel-production-prod3                      production             sentinel   rediss://production.redis.amf:46380/46380                 -                                         on
+prod3   redis       redis-mktdata-production                             marketdata-production  server     10.10.10.13:6382/6379                                     -                                         on
+prod3   redis       redis-GSIND_PROD                                     gsind-production       server     10.10.10.13:6381/6379                                     -                                         on
+# redis-production = the trading app's own Redis (/srv/docker/trading-production).
+# redis-sentinel = /srv/docker/redis (redis:8, db1 + prod3); db1's redis is crash-looping — in progress or abandoned? ask the owner
+prod3   redis       redis-production                                     trading-production     server     10.10.10.13:6379/6379                                     -                                         on
+prod3   redis       redis-sentinel                                       redis8                 sentinel   rediss://prod3.redis.amf:36380/36380                      -                                         off
+prod4   redis       redis-production-prod4                               production             server     rediss://production.redis.amf:46379/46379                 -                                         on
+prod4   redis       redis-sentinel-production-prod4                      production             sentinel   rediss://production.redis.amf:46380/46380                 -                                         on
+prod4   redis       redis-sentinel-staging                               staging                sentinel   rediss://prod4.redis.amf:26380/26380                      -                                         on
+# redis-staging-prod4 is crash-looping (2026-10-30): off until its owner has fixed it
+prod4   redis       redis-staging-prod4                                  staging                server     rediss://prod4.redis.amf:26379/26379                      -                                         off
+prod4   redis       redis-mktdata-staging                                marketdata-staging     server     10.10.10.14:6382/6379                                     -                                         on
+prod4   redis       redis-nexdos-staging                                 nexdos-staging         server     10.10.10.14:6380/6379                                     -                                         on
+prod4   redis       redis-GSIND_PAPER_TRADING                            gsind-paper            server     10.10.10.14:6381/6379                                     -                                         on
+
+# ── GitLab (db1, gitlab-ee; needs deploy/services/gitlab/gitlab.rb.snippet) ──────────────────────
+db1     gitlab      gitlab-ee                                            gitlab                 puma       gitlab-ee:8083                                            proxy_network                             on
+db1     gitlab      gitlab-ee                                            gitlab                 workhorse  gitlab-ee:9229                                            proxy_network                             on
+db1     gitlab      gitlab-ee                                            gitlab                 sidekiq    gitlab-ee:8082                                            proxy_network                             on
+db1     gitlab      gitlab-ee                                            gitlab                 exporter   gitlab-ee:9168                                            proxy_network                             on

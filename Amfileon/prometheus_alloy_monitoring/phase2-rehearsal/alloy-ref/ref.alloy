@@ -1,0 +1,17 @@
+// today's path: Alloy scrapes the separate exporter containers
+prometheus.remote_write "out" {
+  external_labels = { host = sys.env("AMF_HOST"), source = "dockprom" }
+  endpoint { url = "http://prometheus:9090/api/v1/write" }
+}
+prometheus.scrape "nodeexporter" {
+  job_name = "nodeexporter"
+  targets = [{ "__address__" = "nodeexporter:9100" }]
+  scrape_interval = "15s"
+  forward_to = [prometheus.remote_write.out.receiver]
+}
+prometheus.scrape "cadvisor" {
+  job_name = "cadvisor"
+  targets = [{ "__address__" = "cadvisor:8080" }]
+  scrape_interval = "15s"
+  forward_to = [prometheus.remote_write.out.receiver]
+}

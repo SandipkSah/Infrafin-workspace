@@ -1,0 +1,18 @@
+<!--
+  Amfileon monitoring: switches on ClickHouse's built-in Prometheus endpoint (http://<container>:9363/metrics).
+  Same file for servers (…/clickhouse-server/config.d/) and keepers (config.d next to keeper_config.xml).
+
+  Port 9363 is NOT published on the host: only containers on the same Docker network (Alloy) can
+  read it. The endpoint has no login and contains no data — only counters (queries, inserts, parts,
+  replication, memory). Source: deploy/services/clickhouse/prometheus.xml in the monitoring repo.
+-->
+<clickhouse>
+    <prometheus>
+        <endpoint>/metrics</endpoint>
+        <port>9363</port>
+        <metrics>true</metrics>
+        <events>true</events>
+        <asynchronous_metrics>true</asynchronous_metrics>
+        <errors>false</errors>   <!-- one series per error code; failed queries are counted in FailedQuery -->
+    </prometheus>
+</clickhouse>

@@ -1,0 +1,6 @@
+# Rehearsal Prometheus: receives Alloy's remote_write and evaluates the REAL db1 alert rules
+# (deploy/db1/prometheus/alert.rules, mounted read-only).
+global:
+  evaluation_interval: 30s
+rule_files:
+  - /etc/prometheus/alert.rules

@@ -1,0 +1,18 @@
+<?xml version="1.0"?>
+<!-- Base server override (mounted as config.d/config.xml, like the owners' files). setup.sh adds
+     the <prometheus> block with the code of deploy/services/enable-clickhouse-metrics.sh. -->
+<clickhouse>
+    <logger>
+        <level>warning</level>
+    </logger>
+    <zookeeper>
+        <node>
+            <host>db1.production.keeper.amf</host>
+            <port>9181</port>
+        </node>
+    </zookeeper>
+    <macros>
+        <shard>01</shard>
+        <replica>db1</replica>
+    </macros>
+</clickhouse>

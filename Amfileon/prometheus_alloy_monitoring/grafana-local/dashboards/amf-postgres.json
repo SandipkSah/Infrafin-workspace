@@ -1065,6 +1065,39 @@
       "tooltip": ""
     },
     {
+      "title": "ClickHouse",
+      "type": "link",
+      "url": "/d/amf-clickhouse?${__url_time_range}&var-ds=${ds}",
+      "icon": "dashboard",
+      "asDropdown": false,
+      "targetBlank": false,
+      "keepTime": false,
+      "includeVars": false,
+      "tooltip": ""
+    },
+    {
+      "title": "Redis",
+      "type": "link",
+      "url": "/d/amf-redis?${__url_time_range}&var-ds=${ds}",
+      "icon": "dashboard",
+      "asDropdown": false,
+      "targetBlank": false,
+      "keepTime": false,
+      "includeVars": false,
+      "tooltip": ""
+    },
+    {
+      "title": "GitLab",
+      "type": "link",
+      "url": "/d/amf-gitlab?${__url_time_range}&var-ds=${ds}",
+      "icon": "dashboard",
+      "asDropdown": false,
+      "targetBlank": false,
+      "keepTime": false,
+      "includeVars": false,
+      "tooltip": ""
+    },
+    {
       "title": "Certificates",
       "type": "link",
       "url": "/d/amf-certificates?${__url_time_range}&var-ds=${ds}",

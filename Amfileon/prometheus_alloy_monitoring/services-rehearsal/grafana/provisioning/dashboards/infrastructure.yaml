@@ -1,0 +1,11 @@
+apiVersion: 1
+
+providers:
+  - name: infrastructure
+    folder: Infrastructure
+    type: file
+    disableDeletion: true
+    allowUiUpdates: false        # change dashboards in gen_dashboards.py, not in the UI
+    updateIntervalSeconds: 10    # picks up regenerated files automatically
+    options:
+      path: /var/lib/grafana/dashboards

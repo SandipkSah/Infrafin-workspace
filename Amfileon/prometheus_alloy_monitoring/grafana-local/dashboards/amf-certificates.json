@@ -39,7 +39,7 @@
       "id": 1,
       "type": "stat",
       "title": "Certificates checked",
-      "description": "HTTPS names checked every minute by db1's Alloy (list: deploy/alloy/certificate-targets.txt).",
+      "description": "HTTPS names checked every minute by cpu2's Alloy, like a client would (list: deploy/alloy/certificate-targets.txt).",
       "datasource": {
         "type": "prometheus",
         "uid": "${ds}"
@@ -539,6 +539,39 @@
       "title": "PostgreSQL",
       "type": "link",
       "url": "/d/amf-postgres?${__url_time_range}&var-ds=${ds}",
+      "icon": "dashboard",
+      "asDropdown": false,
+      "targetBlank": false,
+      "keepTime": false,
+      "includeVars": false,
+      "tooltip": ""
+    },
+    {
+      "title": "ClickHouse",
+      "type": "link",
+      "url": "/d/amf-clickhouse?${__url_time_range}&var-ds=${ds}",
+      "icon": "dashboard",
+      "asDropdown": false,
+      "targetBlank": false,
+      "keepTime": false,
+      "includeVars": false,
+      "tooltip": ""
+    },
+    {
+      "title": "Redis",
+      "type": "link",
+      "url": "/d/amf-redis?${__url_time_range}&var-ds=${ds}",
+      "icon": "dashboard",
+      "asDropdown": false,
+      "targetBlank": false,
+      "keepTime": false,
+      "includeVars": false,
+      "tooltip": ""
+    },
+    {
+      "title": "GitLab",
+      "type": "link",
+      "url": "/d/amf-gitlab?${__url_time_range}&var-ds=${ds}",
       "icon": "dashboard",
       "asDropdown": false,
       "targetBlank": false,

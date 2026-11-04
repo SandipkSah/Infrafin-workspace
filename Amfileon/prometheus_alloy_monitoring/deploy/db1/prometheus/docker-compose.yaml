@@ -46,6 +46,8 @@ services:
 
   alertmanager:
     image: prom/alertmanager:v0.31.1
+    # links in alert emails ("View In Alertmanager") open Grafana's Monitoring dashboard: Alertmanager has
+    # no public address; --web.route-prefix=/ keeps its own API where Prometheus expects it
     restart: unless-stopped
     environment:
       ALERT_EMAIL_TO: ${ALERT_EMAIL_TO:?set in .env}
@@ -74,7 +76,9 @@ services:
             /etc/alertmanager/alertmanager.yml > /tmp/alertmanager.yml
         exec /bin/alertmanager \
           --config.file=/tmp/alertmanager.yml \
-          --storage.path=/alertmanager
+          --storage.path=/alertmanager \
+          --web.external-url=https://grafana.amf/d/amf-monitoring \
+          --web.route-prefix=/
     volumes:
       - ./alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
       - alertmanager_data:/alertmanager

@@ -18,9 +18,9 @@ import pathlib
 OUT = pathlib.Path(__file__).parent / "dashboards"
 
 # ── palette (reference categorical order, light/dark-safe; status palette fixed) ──────────────
-HOST_COLORS = {          # categorical slots 1..6, fixed per host
+HOST_COLORS = {          # categorical slots 1..8, fixed per host
     "db1": "#2a78d6", "db2": "#eb6834", "cpu1": "#1baf7a",
-    "cpu2": "#eda100", "gpu1": "#e87ba4", "prod3": "#008300",
+    "cpu2": "#eda100", "gpu1": "#e87ba4", "prod3": "#008300", "prod4": "#6250d6", "prod2": "#e34948",
 }
 SERIES = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#6250d6", "#e34948"]
 GOOD, WARNING, SERIOUS, CRITICAL = "#0ca30c", "#fab219", "#ec835a", "#d03b3b"
@@ -31,7 +31,8 @@ DS = {"type": "prometheus", "uid": "${ds}"}
 
 # Same navigation bar on every dashboard (keeps the selected time range and Prometheus).
 NAV = [("Fleet", "amf-fleet"), ("Hosts", "amf-host"), ("Traffic", "amf-traffic"),
-       ("PostgreSQL", "amf-postgres"), ("Certificates", "amf-certificates"), ("Monitoring", "amf-monitoring")]
+       ("PostgreSQL", "amf-postgres"), ("ClickHouse", "amf-clickhouse"), ("Redis", "amf-redis"),
+       ("GitLab", "amf-gitlab"), ("Certificates", "amf-certificates"), ("Monitoring", "amf-monitoring")]
 NAV_LINKS = [{"title": t, "type": "link", "url": f"/d/{uid}?${{__url_time_range}}&var-ds=${{ds}}",
               "icon": "dashboard", "asDropdown": False, "targetBlank": False, "keepTime": False,
               "includeVars": False, "tooltip": ""} for t, uid in NAV]
@@ -207,7 +208,7 @@ CPU_BUSY = ('100 * (1 - avg by (host) (rate(node_cpu_seconds_total{job="nodeexpo
             'mode="idle"}[$__rate_interval])))')
 MEM_USED = ('100 * (1 - max by (host) (node_memory_MemAvailable_bytes{job="nodeexporter"}) '
             '/ max by (host) (node_memory_MemTotal_bytes{job="nodeexporter"}))')
-REAL_FS = 'job="nodeexporter", fstype=~"ext4|xfs|btrfs|zfs", mountpoint!~"/boot.*"'
+REAL_FS = 'job="nodeexporter", fstype=~"ext4|xfs|btrfs|zfs|ntfs", mountpoint!~"/boot.*"'   # ntfs: prod2 (Windows)
 DISK_USED = (f'100 * (1 - node_filesystem_avail_bytes{{{REAL_FS}}} '
              f'/ node_filesystem_size_bytes{{{REAL_FS}}})')
 PCT_THRESH = thresholds((None, GOOD), (80, WARNING), (90, CRITICAL))
@@ -369,7 +370,7 @@ def host():
                                  f'and on (name) topk(5, avg_over_time(sum by (name) (rate(container_cpu_usage_seconds_total{{{c}}}[5m]))[$__range:5m] @ end()))', "{{name}}")),
                         "none", w=24, h=8, minv=0, fill=0,
                         desc="Cores used by the five containers with the highest average CPU over the selected time range (chosen once, at the end of the range)."))
-    p.append(row(g, "Power (scaphandre — db2, prod3)", collapsed=True, panels=[
+    p.append(row(g, "Power (scaphandre — db2, prod3, prod4)", collapsed=True, panels=[
         timeseries(Grid(), "Host power draw", targets((f'scaph_host_power_microwatts{{{H}}} / 1e6', "host")),
                    "watt", w=24, h=8, minv=0, fill=10, desc="Measured by scaphandre via RAPL. Empty on hosts without scaphandre data."),
     ]))
@@ -496,8 +497,8 @@ def monitoring():
                   w=6, h=8, thresh=thresholds((None, GOOD), (1, WARNING)),
                   desc="Silenced alerts are NOT emailed. Should normally be 0."))
     p.append(stat(g, "Hosts sending to both Prometheus", targets('count(count by (host) (up{job="nodeexporter"}))'),
-                  w=6, h=8, thresh=thresholds((None, CRITICAL), (6, GOOD)),
-                  desc="Hosts with node-exporter data arriving through Alloy (expected: 6; prod4 later)."))
+                  w=6, h=8, thresh=thresholds((None, CRITICAL), (8, GOOD)),
+                  desc="Hosts with node-exporter data arriving through Alloy (expected: 8 — prod2 is Windows)."))
     return dashboard("amf-monitoring", "Monitoring health", p, [ds_var()],
                      "Is the monitoring itself healthy?", tags=("monitoring",))
 
@@ -510,7 +511,7 @@ def certificates():
     DAYS_T = thresholds((None, CRITICAL), (7, WARNING), (30, GOOD))
     p = [
         stat(g, "Certificates checked", targets(f'count(probe_success{{{C}}})'), w=6, color_mode="none",
-             desc="HTTPS names checked every minute by db1's Alloy (list: deploy/alloy/certificate-targets.txt)."),
+             desc="HTTPS names checked every minute by cpu2's Alloy, like a client would (list: deploy/alloy/certificate-targets.txt)."),
         stat(g, "Valid now", targets(f'count(probe_success{{{C}}} == 1) or vector(0)'), w=6,
              thresh=thresholds((None, GOOD))),
         stat(g, "Check failing", targets(f'count(probe_success{{{C}}} == 0) or vector(0)'), w=6,
@@ -591,6 +592,310 @@ def traffic():
                      "Web requests through nginx-proxy, host network cards, and the busiest containers.", tags=("traffic",))
 
 
+# ── ClickHouse / Redis / GitLab (collected per deploy/alloy/service-targets.txt) ──────────────
+TARGETS = pathlib.Path(__file__).parent.parent / "deploy" / "alloy" / "service-targets.txt"
+NOT_ON = "No data — not collected yet (switch on in deploy/alloy/service-targets.txt)"
+
+
+def service_targets(kind):
+    out = []
+    for line in TARGETS.read_text().splitlines():
+        f = line.split()
+        if f and not f[0].startswith("#") and len(f) == 8 and f[1] == kind:
+            out.append(dict(zip(("host", "kind", "name", "cluster", "role", "address", "network", "on"), f)))
+    return out
+
+
+def cluster_var(kind):
+    """Cluster drop-down from the target list: text = cluster label, value = its container names
+    (regex for cAdvisor's name label) — so the container panels work before metrics are switched on."""
+    clusters, collected = {}, set()
+    for t in service_targets(kind):
+        clusters.setdefault(t["cluster"], []).append(t["name"])
+        if t["on"] == "on":
+            collected.add(t["cluster"])
+    # only clusters that are collected (a cluster not switched on yet would only show "no data");
+    # it appears here automatically once a line of it is "on" in service-targets.txt
+    order = [c for c in clusters if c in collected] or list(clusters)
+    opts = [{"text": c, "value": "|".join(sorted(set(clusters[c]))), "selected": i == 0}
+            for i, c in enumerate(order)]
+    return {"name": "cluster", "label": "Cluster", "type": "custom",
+            "query": ",".join(f'{o["text"]} : {o["value"]}' for o in opts),
+            "current": {"text": opts[0]["text"], "value": opts[0]["value"]}, "options": opts,
+            "hide": 0, "includeAll": False, "multi": False}
+
+
+def merged_table(g, title, keys, cols, w=24, h=8, desc="", sort=None):
+    """One row per key (e.g. host + instance); each column is one instant query aggregated by keys.
+    keys: [(label, column name)] · cols: [(expr, column name, field properties)]"""
+    by = ", ".join(k for k, _ in keys)
+    tg = targets(*[(f"max by ({by}) ({e})", "") for e, _, _ in cols], instant=True, fmt="table")
+    index, rename, overrides = {k: i for i, (k, _) in enumerate(keys)}, dict(keys), []
+    for i, (_, name, props) in enumerate(cols):
+        ref = f"Value #{chr(65 + i)}"
+        index[ref], rename[ref] = len(keys) + i, name
+        if props:
+            overrides.append({"matcher": {"id": "byName", "options": name}, "properties": props})
+    return table(g, title, tg, w=w, h=h, desc=desc, sort=sort or [{"displayName": keys[0][1], "desc": False}],
+                 transformations=[{"id": "merge", "options": {}},
+                                  {"id": "organize", "options": {"excludeByName": {"Time": True},
+                                                                 "indexByName": index, "renameByName": rename}}],
+                 overrides=overrides)
+
+
+UP_MAP = [{"type": "value", "options": {"0": {"text": "DOWN", "color": CRITICAL}, "1": {"text": "UP", "color": GOOD}}}]
+UP_CELL = [{"id": "mappings", "value": UP_MAP}, {"id": "custom.cellOptions", "value": {"type": "color-text"}}]
+UP_THRESH = thresholds((None, CRITICAL), (1, GOOD))
+
+
+def fixed(*names):
+    """Fixed categorical colours for named series (in order), e.g. read/write."""
+    return [{"matcher": {"id": "byName", "options": n},
+             "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": SERIES[i]}}]}
+            for i, n in enumerate(names)]
+
+
+def containers_row(g, sel, what):
+    """cAdvisor CPU / memory of the service's containers — available without any metrics endpoint."""
+    c = f'job="cadvisor", {sel}'
+    return [
+        row(g, f"Containers (cAdvisor — works without the {what} metrics)"),
+        timeseries(g, "Container CPU (cores)",
+                   targets((f'sum by (host, name) (rate(container_cpu_usage_seconds_total{{{c}}}[$__rate_interval]))', "{{host}} / {{name}}")),
+                   "none", minv=0, fill=0),
+        timeseries(g, "Container memory (working set)",
+                   targets((f'sum by (host, name) (container_memory_working_set_bytes{{{c}}})', "{{host}} / {{name}}")),
+                   "bytes", minv=0, fill=0),
+    ]
+
+
+def clickhouse():
+    g = Grid()
+    C = 'job="clickhouse", cluster="${cluster:text}"'
+    S, K = C + ', role="server"', C + ', role="keeper"'
+    rate = lambda m: f'sum by (host) (rate(ClickHouseProfileEvents_{m}{{{S}}}[$__rate_interval]))'
+    PARTS_T = thresholds((None, GOOD), (500, WARNING), (1000, CRITICAL))
+    p = [
+        stat(g, "Servers", targets((f'up{{{S}}}', "{{host}}")), w=6, text_mode="value_and_name",
+             thresh=UP_THRESH, mappings=UP_MAP, desc="ClickHouse servers of the selected cluster (one per host). DOWN for 5 min → ExporterDown."),
+        stat(g, "Queries / s", targets(f'sum(rate(ClickHouseProfileEvents_Query{{{S}}}[5m]))'), "ops", w=3, color_mode="none", decimals=1),
+        stat(g, "Failed queries / s", targets(f'sum(rate(ClickHouseProfileEvents_FailedQuery{{{S}}}[5m]))'), "ops", w=3, decimals=2,
+             thresh=thresholds((None, GOOD), (0.01, WARNING)), desc="Queries that ended with an exception (syntax errors, timeouts, memory limit, …)."),
+        stat(g, "Rows inserted / s", targets(f'sum(rate(ClickHouseProfileEvents_InsertedRows{{{S}}}[5m]))'), "short", w=3, color_mode="none"),
+        stat(g, "Read-only replicas", targets(f'sum(ClickHouseMetrics_ReadonlyReplica{{{S}}})'), w=3,
+             thresh=thresholds((None, GOOD), (1, CRITICAL)), desc="Replicated tables that cannot take inserts (lost Keeper) → ClickHouseReadonlyReplica."),
+        stat(g, "Most parts in one partition", targets(f'max(ClickHouseAsyncMetrics_MaxPartCountForPartition{{{S}}})'), w=3,
+             thresh=PARTS_T, desc="ClickHouse slows inserts at 1000 and rejects them at 3000. Alert above 500 (ClickHouseTooManyParts)."),
+        stat(g, "Replication delay", targets(f'max(ClickHouseAsyncMetrics_ReplicasMaxAbsoluteDelay{{{S}}})'), "s", w=3,
+             thresh=thresholds((None, GOOD), (60, WARNING), (300, CRITICAL)), desc="Worst replica in the cluster. Alert above 5 min."),
+    ]
+    p.append(row(g, "Queries"))
+    p.append(timeseries(g, "Queries per second", targets((rate("Query"), "{{host}}")), "ops", minv=0, fill=0, overrides=host_overrides()))
+    p.append(timeseries(g, "Running queries", targets((f'sum by (host) (ClickHouseMetrics_Query{{{S}}})', "{{host}}")),
+                        "none", minv=0, fill=0, overrides=host_overrides(), desc="Queries executing right now."))
+    p.append(timeseries(g, "Failed queries per second", targets((rate("FailedQuery"), "{{host}}")), "ops", minv=0, fill=0,
+                        overrides=host_overrides()))
+    p.append(timeseries(g, "SELECT vs INSERT (whole cluster)",
+                        targets((f'sum(rate(ClickHouseProfileEvents_SelectQuery{{{S}}}[$__rate_interval]))', "select"),
+                                (f'sum(rate(ClickHouseProfileEvents_InsertQuery{{{S}}}[$__rate_interval]))', "insert")),
+                        "ops", minv=0, fill=0, overrides=fixed("select", "insert")))
+    p.append(row(g, "Inserts"))
+    p.append(timeseries(g, "Rows inserted per second", targets((rate("InsertedRows"), "{{host}}")), "short", w=8, minv=0, fill=0,
+                        overrides=host_overrides()))
+    p.append(timeseries(g, "Bytes inserted per second", targets((rate("InsertedBytes"), "{{host}}")), "Bps", w=8, minv=0, fill=0,
+                        overrides=host_overrides()))
+    p.append(timeseries(g, "Delayed / rejected inserts",
+                        targets((f'sum(rate(ClickHouseProfileEvents_DelayedInserts{{{S}}}[$__rate_interval]))', "delayed"),
+                                (f'sum(rate(ClickHouseProfileEvents_RejectedInserts{{{S}}}[$__rate_interval]))', "rejected")),
+                        "ops", w=8, minv=0, fill=10, overrides=fixed("delayed", "rejected"),
+                        desc="Throttled (delayed) or refused (rejected) because a partition has too many parts. Should be 0."))
+    p.append(row(g, "Parts, merges & replication"))
+    p.append(timeseries(g, "Most parts in one partition",
+                        targets((f'max by (host) (ClickHouseAsyncMetrics_MaxPartCountForPartition{{{S}}})', "{{host}}")),
+                        "none", w=8, minv=0, fill=0, overrides=host_overrides(), thresh=PARTS_T, thresh_style="dashed"))
+    p.append(timeseries(g, "Running merges", targets((f'sum by (host) (ClickHouseMetrics_Merge{{{S}}})', "{{host}}")),
+                        "none", w=8, minv=0, fill=0, overrides=host_overrides()))
+    p.append(timeseries(g, "Replication delay",
+                        targets((f'max by (host) (ClickHouseAsyncMetrics_ReplicasMaxAbsoluteDelay{{{S}}})', "{{host}}")),
+                        "s", w=8, minv=0, fill=0, overrides=host_overrides(),
+                        desc="How far each server's replicated tables are behind the most up-to-date replica."))
+    p.append(timeseries(g, "Replication queue (tasks waiting)",
+                        targets((f'sum by (host) (ClickHouseAsyncMetrics_ReplicasSumQueueSize{{{S}}})', "{{host}}")),
+                        "none", w=8, minv=0, fill=0, overrides=host_overrides()))
+    p.append(timeseries(g, "Keeper sessions", targets((f'sum by (host) (ClickHouseMetrics_ZooKeeperSession{{{S}}})', "{{host}}")),
+                        "none", w=8, minv=0, fill=0, overrides=host_overrides(),
+                        desc="Connection of each server to ClickHouse Keeper: should be 1. 0 = replicated tables go read-only."))
+    p.append(timeseries(g, "Data stored (MergeTree tables)",
+                        targets((f'max by (host) (ClickHouseAsyncMetrics_TotalBytesOfMergeTreeTables{{{S}}})', "{{host}}")),
+                        "bytes", w=8, minv=0, fill=0, overrides=host_overrides()))
+    p.append(row(g, "Keeper"))
+    p.append(merged_table(
+        g, "Keeper nodes", [("clickhouse", "Keeper"), ("host", "Host")],
+        [(f'up{{{K}}}', "Up", UP_CELL),
+         (f'ClickHouseAsyncMetrics_KeeperIsLeader{{{K}}}', "Role",
+          [{"id": "mappings", "value": [{"type": "value", "options": {"1": {"text": "leader"}, "0": {"text": "follower"}}}]}]),
+         (f'ClickHouseAsyncMetrics_KeeperZnodeCount{{{K}}}', "Znodes", []),
+         (f'ClickHouseAsyncMetrics_KeeperAvgLatency{{{K}}}', "Avg latency", [{"id": "unit", "value": "ms"}]),
+         (f'ClickHouseMetrics_KeeperOutstandingRequests{{{K}}}', "Outstanding requests", []),
+         (f'ClickHouseMetrics_KeeperAliveConnections{{{K}}}', "Connections", [])],
+        h=6, desc="Exactly one leader per cluster; a cluster of 3 keeps working with 1 keeper down."))
+    p.append(row(g, "Resources"))
+    p.append(timeseries(g, "Memory used by ClickHouse", targets((f'max by (host) (ClickHouseMetrics_MemoryTracking{{{S}}})', "{{host}}")),
+                        "bytes", w=8, minv=0, fill=0, overrides=host_overrides()))
+    p.append(timeseries(g, "Client connections",
+                        targets((f'sum by (host) (ClickHouseMetrics_TCPConnection{{{S}}} + ClickHouseMetrics_HTTPConnection{{{S}}})', "{{host}}")),
+                        "none", w=8, minv=0, fill=0, overrides=host_overrides(), desc="Native (TCP) + HTTP connections."))
+    p.append(timeseries(g, "Free space (default disk)", targets((f'min by (host) (ClickHouseAsyncMetrics_DiskAvailable_default{{{S}}})', "{{host}}")),
+                        "bytes", w=8, minv=0, fill=0, overrides=host_overrides()))
+    p += containers_row(g, 'name=~"$cluster"', "ClickHouse")
+    return dashboard("amf-clickhouse", "ClickHouse", p, [ds_var(), cluster_var("clickhouse")],
+                     "ClickHouse servers and keepers per cluster (production, staging, marketdata).", tags=("clickhouse",))
+
+
+def redis():
+    g = Grid()
+    C = 'job="redis", cluster="${cluster:text}"'
+    R, SN = C + ', kind="server"', C + ', kind="sentinel"'
+    by_host = lambda e: f'sum by (host) ({e})'
+    HIT = (f'100 * sum by (host) (rate(redis_keyspace_hits_total{{{R}}}[$__rate_interval])) / '
+           f'(sum by (host) (rate(redis_keyspace_hits_total{{{R}}}[$__rate_interval])) + sum by (host) (rate(redis_keyspace_misses_total{{{R}}}[$__rate_interval])))')
+    p = [
+        stat(g, "Instances", targets((f'redis_up{{{C}}}', "{{redis}}")), w=10, text_mode="value_and_name",
+             thresh=UP_THRESH, mappings=UP_MAP, desc="Servers and sentinels of the selected cluster. DOWN for 2 min → RedisDown."),
+        stat(g, "Commands / s", targets(f'sum(rate(redis_commands_processed_total{{{R}}}[5m]))'), "ops", w=3, color_mode="none"),
+        stat(g, "Clients", targets(f'sum(redis_connected_clients{{{R}}})'), w=3, color_mode="none"),
+        stat(g, "Memory used", targets(f'sum(redis_memory_used_bytes{{{R}}})'), "bytes", w=3, color_mode="none"),
+        stat(g, "Evicted keys (range)", targets(f'sum(increase(redis_evicted_keys_total{{{R}}}[$__range]))'), w=3, decimals=0,
+             thresh=thresholds((None, GOOD), (1, WARNING)), desc="Keys thrown out because maxmemory was reached."),
+    ]
+    p.append(merged_table(
+        g, "Servers — now", [("redis", "Instance"), ("host", "Host")],
+        [(f'redis_up{{{R}}}', "Up", UP_CELL),
+         (f'redis_instance_info{{{R}, role="master"}} or redis_instance_info{{{R}, role!="master"}} * 0', "Role",
+          [{"id": "mappings", "value": [{"type": "value", "options": {"1": {"text": "master"}, "0": {"text": "replica"}}}]}]),
+         (f'redis_uptime_in_seconds{{{R}}}', "Uptime", [{"id": "unit", "value": "dtdurations"}]),
+         (f'redis_memory_used_bytes{{{R}}}', "Memory", [{"id": "unit", "value": "bytes"}]),
+         (f'redis_memory_max_bytes{{{R}}}', "maxmemory", [{"id": "unit", "value": "bytes"},
+                                                         {"id": "mappings", "value": [{"type": "value", "options": {"0": {"text": "no limit"}}}]}]),
+         (f'redis_connected_clients{{{R}}}', "Clients", []),
+         (f'sum by (redis, host) (redis_db_keys{{{R}}})', "Keys", []),
+         (f'redis_rdb_last_bgsave_status{{{R}}}', "Last save",
+          [{"id": "mappings", "value": [{"type": "value", "options": {"1": {"text": "✓ ok", "color": GOOD}, "0": {"text": "✗ failed", "color": CRITICAL}}}]},
+           {"id": "custom.cellOptions", "value": {"type": "color-text"}}])],
+        h=6))
+    p.append(row(g, "Load"))
+    p.append(timeseries(g, "Commands per second", targets((by_host(f'rate(redis_commands_processed_total{{{R}}}[$__rate_interval])'), "{{host}}")),
+                        "ops", w=8, minv=0, fill=0, overrides=host_overrides()))
+    p.append(timeseries(g, "Connected clients", targets((by_host(f'redis_connected_clients{{{R}}}'), "{{host}}")),
+                        "none", w=8, minv=0, fill=0, overrides=host_overrides()))
+    p.append(timeseries(g, "Cache hit ratio", targets((HIT, "{{host}}")), "percent", w=8, minv=0, maxv=100, fill=0,
+                        overrides=host_overrides(), desc="Share of key lookups that found the key."))
+    p.append(timeseries(g, "Network traffic",
+                        targets((f'sum(rate(redis_net_input_bytes_total{{{R}}}[$__rate_interval]))', "in"),
+                                (f'sum(rate(redis_net_output_bytes_total{{{R}}}[$__rate_interval]))', "out")),
+                        "Bps", w=8, minv=0, fill=0, overrides=fixed("in", "out")))
+    p.append(timeseries(g, "Blocked clients", targets((by_host(f'redis_blocked_clients{{{R}}}'), "{{host}}")),
+                        "none", w=8, minv=0, fill=0, overrides=host_overrides(), desc="Clients waiting in BLPOP/XREAD etc."))
+    p.append(timeseries(g, "Rejected connections", targets((by_host(f'rate(redis_rejected_connections_total{{{R}}}[$__rate_interval])'), "{{host}}")),
+                        "ops", w=8, minv=0, fill=0, overrides=host_overrides(), desc="Refused because maxclients was reached. Should be 0."))
+    p.append(row(g, "Memory & keys"))
+    p.append(timeseries(g, "Memory used", targets((by_host(f'redis_memory_used_bytes{{{R}}}'), "{{host}}")),
+                        "bytes", w=8, minv=0, fill=0, overrides=host_overrides()))
+    p.append(timeseries(g, "Keys", targets((by_host(f'redis_db_keys{{{R}}}'), "{{host}}")),
+                        "short", w=8, minv=0, fill=0, overrides=host_overrides()))
+    p.append(timeseries(g, "Expired / evicted keys",
+                        targets((f'sum(rate(redis_expired_keys_total{{{R}}}[$__rate_interval]))', "expired"),
+                                (f'sum(rate(redis_evicted_keys_total{{{R}}}[$__rate_interval]))', "evicted")),
+                        "ops", w=8, minv=0, fill=0, overrides=fixed("expired", "evicted"),
+                        desc="expired = TTL ran out (normal); evicted = thrown out by maxmemory (data loss for a cache miss)."))
+    p.append(row(g, "Replication & sentinels"))
+    p.append(timeseries(g, "Replica link to master", targets((f'max by (host) (redis_master_link_up{{{R}}})', "{{host}}")),
+                        "none", w=8, minv=0, maxv=1, fill=0, overrides=host_overrides(),
+                        desc="Replicas only: 1 = connected to its master. 0 for 5 min → RedisReplicationBroken."))
+    p.append(timeseries(g, "Replica lag", targets((f'max by (host, slave_ip) (redis_connected_slave_lag_seconds{{{R}}})', "{{host}} → {{slave_ip}}")),
+                        "s", w=8, minv=0, fill=0, desc="As seen by the master: seconds since each replica last acknowledged."))
+    p.append(merged_table(
+        g, "Sentinels' view of the master", [("redis", "Sentinel"), ("host", "Host"), ("master_name", "Watches")],
+        [(f'redis_sentinel_master_status{{{SN}}}', "Master", [
+            {"id": "mappings", "value": [{"type": "value", "options": {"1": {"text": "✓ ok", "color": GOOD}, "0": {"text": "✗ down", "color": CRITICAL}}}]},
+            {"id": "custom.cellOptions", "value": {"type": "color-text"}}]),
+         (f'redis_sentinel_master_ok_slaves{{{SN}}}', "Replicas ok", []),
+         (f'redis_sentinel_master_ok_sentinels{{{SN}}}', "Sentinels ok", [])],
+        w=8, h=8, desc="Every sentinel should see the master ok and agree on the counts."))
+    p += containers_row(g, f'name=~"$cluster"', "Redis")
+    return dashboard("amf-redis", "Redis", p, [ds_var(), cluster_var("redis")],
+                     "Redis servers and sentinels per cluster (production, staging, marketdata, …).", tags=("redis",))
+
+
+def gitlab():
+    g = Grid()
+    WH = 'job="gitlab-workhorse"'
+    # long-polling (CI runners ask for jobs and wait ~50 s) and git transfers would dominate latency
+    FAST = WH + ', route!~".*(jobs/request|git-upload-pack|git-receive-pack|info/refs|archive|artifacts).*"'
+    LAT = lambda q, sel: f'histogram_quantile({q}, sum by (le) (rate(gitlab_workhorse_http_request_duration_seconds_bucket{{{sel}}}[$__rate_interval])))'
+    p = [
+        stat(g, "Metrics endpoints", targets(('up{job=~"gitlab-.*"}', "{{job}}")), w=8, text_mode="value_and_name",
+             thresh=UP_THRESH, mappings=UP_MAP, desc="GitLab's Puma, Workhorse, Sidekiq and gitlab-exporter metrics ports. DOWN for 5 min → ExporterDown."),
+        stat(g, "gitlab.amf (HTTPS)", targets('probe_success{job="certificates", certificate="gitlab.amf"}'), w=4,
+             thresh=UP_THRESH, mappings=[{"type": "value", "options": {"0": {"text": "FAILING", "color": CRITICAL}, "1": {"text": "OK", "color": GOOD}}}],
+             desc="cpu2's Alloy connects to gitlab.amf:443 every minute and checks the certificate (Certificates dashboard)."),
+        stat(g, "Requests / s", targets(f'sum(rate(gitlab_workhorse_http_requests_total{{{WH}}}[5m]))'), "reqps", w=3, color_mode="none", decimals=1),
+        stat(g, "Server errors", targets(f'100 * (sum(rate(gitlab_workhorse_http_requests_total{{{WH}, code=~"5.."}}[5m])) or vector(0)) / sum(rate(gitlab_workhorse_http_requests_total{{{WH}}}[5m]))'),
+             "percent", w=3, decimals=2, thresh=thresholds((None, GOOD), (1, WARNING), (5, CRITICAL)), desc="Share of HTTP 5xx answers."),
+        stat(g, "Sidekiq jobs waiting", targets('sum(sidekiq_queue_size{job="gitlab-exporter"})'), w=3,
+             thresh=thresholds((None, GOOD), (100, WARNING), (1000, CRITICAL))),
+        stat(g, "Oldest waiting job", targets('max(sidekiq_queue_latency_seconds{job="gitlab-exporter"})'), "s", w=3,
+             thresh=thresholds((None, GOOD), (60, WARNING), (600, CRITICAL)), desc="How long the oldest job in any queue has been waiting."),
+    ]
+    p.append(row(g, "Web (Workhorse)"))
+    p.append(timeseries(g, "Requests per second by status",
+                        targets((f'sum by (class) (label_replace(rate(gitlab_workhorse_http_requests_total{{{WH}}}[$__rate_interval]), "class", "${{1}}xx", "code", "([0-9])..")) ', "{{class}}")),
+                        "reqps", minv=0, fill=0,
+                        overrides=fixed("2xx", "3xx", "4xx") + [{"matcher": {"id": "byName", "options": "5xx"},
+                                                                 "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": CRITICAL}}]}]))
+    p.append(timeseries(g, "Response time (interactive requests)",
+                        targets((LAT("0.5", FAST), "median"), (LAT("0.95", FAST), "95th percentile")),
+                        "s", minv=0, fill=0, overrides=fixed("median", "95th percentile"),
+                        desc="Excludes CI runners' long-polling job requests and git clone/push transfers, which are slow by design."))
+    p.append(bargauge(g, "Busiest routes now", targets(
+        (f'topk(10, sum by (route) (rate(gitlab_workhorse_http_requests_total{{{WH}}}[5m])))', "{{route}}"), instant=True), "reqps", w=12, h=9))
+    p.append(bargauge(g, "Routes with server errors now", targets(
+        (f'topk(10, sum by (route) (rate(gitlab_workhorse_http_requests_total{{{WH}, code=~"5.."}}[5m])) > 0)', "{{route}}"), instant=True),
+        "reqps", w=12, h=9, thresh=thresholds((None, CRITICAL))))
+    p[-1]["fieldConfig"]["defaults"]["noValue"] = "No server errors (no HTTP 5xx in the last 5 min)"
+    p.append(row(g, "Puma (Rails web workers)"))
+    p.append(timeseries(g, "Busy threads (% of all)",
+                        targets(('100 * (1 - sum(puma_pool_capacity{job="gitlab-puma"}) / sum(puma_max_threads{job="gitlab-puma"}))', "busy")),
+                        "percent", w=8, minv=0, maxv=100, fill=10, thresh=thresholds((None, "transparent"), (90, WARNING)), thresh_style="dashed",
+                        desc="Near 100 % means requests start to queue (see next panel)."))
+    p.append(timeseries(g, "Requests queued in Puma", targets(('sum(puma_queued_connections{job="gitlab-puma"})', "queued")),
+                        "none", w=8, minv=0, fill=10, desc="Should be 0. Above 0 = not enough Puma workers/threads for the load."))
+    p.append(timeseries(g, "Workers", targets(('sum(puma_running_workers{job="gitlab-puma"})', "running"), ('sum(puma_workers{job="gitlab-puma"})', "configured")),
+                        "none", w=8, minv=0, fill=0, overrides=fixed("running", "configured")))
+    p.append(row(g, "Sidekiq (background jobs)"))
+    p.append(timeseries(g, "Jobs per second",
+                        targets(('sum(rate(sidekiq_jobs_completion_seconds_count{job="gitlab-sidekiq"}[$__rate_interval]))', "completed"),
+                                ('sum(rate(sidekiq_jobs_failed_total{job="gitlab-sidekiq"}[$__rate_interval])) or (0 * sum(rate(sidekiq_jobs_completion_seconds_count{job="gitlab-sidekiq"}[$__rate_interval])))', "failed")),
+                        "ops", w=8, minv=0, fill=0, overrides=fixed("completed") + [{"matcher": {"id": "byName", "options": "failed"},
+                                                                                     "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": CRITICAL}}]}]))
+    p.append(timeseries(g, "Jobs running vs capacity",
+                        targets(('sum(sidekiq_running_jobs{job="gitlab-sidekiq"})', "running"), ('sum(sidekiq_concurrency{job="gitlab-sidekiq"})', "capacity")),
+                        "none", w=8, minv=0, fill=0, overrides=fixed("running", "capacity")))
+    p.append(timeseries(g, "Retry / dead / scheduled",
+                        targets(*[(f'sum(sidekiq_jobs_{k}_size{{job="gitlab-exporter"}})', k) for k in ("retry", "dead", "scheduled")]),
+                        "none", w=8, minv=0, fill=0, overrides=fixed("retry", "dead", "scheduled"),
+                        desc="retry = failed, will be retried; dead = gave up (inspect in Admin → Monitoring → Background jobs)."))
+    p.append(timeseries(g, "Queue size (top 8 queues)",
+                        targets(('sum by (name) (sidekiq_queue_size{job="gitlab-exporter"}) and on (name) topk(8, max_over_time(sum by (name) (sidekiq_queue_size{job="gitlab-exporter"})[$__range:1m] @ end()))', "{{name}}")),
+                        "none", minv=0, fill=0))
+    p.append(timeseries(g, "Queue latency (top 8 queues)",
+                        targets(('max by (name) (sidekiq_queue_latency_seconds{job="gitlab-exporter"}) and on (name) topk(8, max_over_time(max by (name) (sidekiq_queue_latency_seconds{job="gitlab-exporter"})[$__range:1m] @ end()))', "{{name}}")),
+                        "s", minv=0, fill=0, desc="Age of the oldest job waiting in each queue."))
+    p += containers_row(g, 'host="db1", name="gitlab-ee"', "GitLab")
+    return dashboard("amf-gitlab", "GitLab", p, [ds_var()],
+                     "GitLab (gitlab-ee on db1): web requests, Puma, Sidekiq background jobs.", tags=("gitlab",))
+
+
 def explain_empty(d):
     """Panels that are empty for a known reason say so instead of a bare 'No data'."""
     def walk(ps):
@@ -615,15 +920,22 @@ def explain_empty(d):
         elif "DCGM_" in exprs:
             msg = "No GPU on this host (GPU data: gpu1)"
         elif "scaph_" in exprs:
-            msg = "No power data for this host (db2, prod3)"
-        if msg and "fieldConfig" in p:
+            msg = "No power data for this host (db2, prod3, prod4)"
+        elif any(k in exprs for k in ("ClickHouse", 'job="clickhouse"', "redis_", 'job=~"gitlab-', "sidekiq_", "puma_", "gitlab_workhorse")):
+            msg = NOT_ON
+        if msg and "fieldConfig" in p and "noValue" not in p["fieldConfig"]["defaults"]:   # keep a panel's own text
             p["fieldConfig"]["defaults"]["noValue"] = msg
+            if p["type"] == "stat":
+                # no data is not "good" or "down": grey instead of the threshold colour
+                p["fieldConfig"]["defaults"].setdefault("mappings", []).append(
+                    {"type": "special", "options": {"match": "null", "result": {"text": "no data", "color": "#5b6b7f"}}})
     return d
 
 
 if __name__ == "__main__":
     OUT.mkdir(exist_ok=True)
-    for d in map(explain_empty, (fleet(), host(), postgres(), monitoring(), certificates(), traffic())):
+    for d in map(explain_empty, (fleet(), host(), postgres(), monitoring(), certificates(), traffic(),
+                                 clickhouse(), redis(), gitlab())):
         path = OUT / f"{d['uid']}.json"
         path.write_text(json.dumps(d, indent=2) + "\n")
         print(f"wrote {path.name}: {len(d['panels'])} panels")

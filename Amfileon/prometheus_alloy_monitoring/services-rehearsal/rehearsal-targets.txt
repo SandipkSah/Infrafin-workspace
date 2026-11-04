@@ -1,0 +1,14 @@
+# Local rehearsal of deploy/alloy/service-targets.txt — same format, fed to the SAME generator
+# (deploy/alloy/gen_services.py --targets this-file). Everything runs as "host db1" on this Mac.
+#
+# host  kind        name                       cluster     role       address                                    network    on
+db1     clickhouse  db1.production.ch.amf      production  server     db1.production.ch.amf:9363                 rehearsal  on
+db1     clickhouse  db1.production.keeper.amf  production  keeper     db1.production.keeper.amf:9363             rehearsal  on
+# TLS-only + password, like the production HA set (certificate for production.redis.amf from a test CA)
+db1     redis       redis-production-db1       production  server     rediss://production.redis.amf:46379/46379  -          on
+db1     redis       redis-staging              staging     server     redis-staging:26379/26379                  -          on
+db1     redis       redis-sentinel-staging     staging     sentinel   redis-sentinel-staging:26380/26380         -          on
+db1     gitlab      gitlab-ee                  gitlab      puma       gitlab-ee:8083                             rehearsal  on
+db1     gitlab      gitlab-ee                  gitlab      workhorse  gitlab-ee:9229                             rehearsal  on
+db1     gitlab      gitlab-ee                  gitlab      sidekiq    gitlab-ee:8082                             rehearsal  on
+db1     gitlab      gitlab-ee                  gitlab      exporter   gitlab-ee:9168                             rehearsal  on

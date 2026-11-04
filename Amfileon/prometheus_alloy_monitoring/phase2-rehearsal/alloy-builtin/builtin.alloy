@@ -1,0 +1,53 @@
+// candidate: the same exporters compiled into Alloy
+prometheus.remote_write "out" {
+  external_labels = { host = sys.env("AMF_HOST"), source = "builtin" }
+  endpoint { url = "http://prometheus:9090/api/v1/write" }
+}
+
+prometheus.exporter.unix "node" {
+  procfs_path = "/host/proc"
+  sysfs_path  = "/host/sys"
+  rootfs_path = "/rootfs"
+  filesystem {
+    mount_points_exclude = "^/(sys|proc|dev|host|etc)($|/)"
+  }
+}
+
+prometheus.exporter.cadvisor "containers" {
+  docker_host = "unix:///var/run/docker.sock"
+}
+
+// keep today's job/instance labels so dashboards and alert rules work unchanged
+discovery.relabel "node" {
+  targets = prometheus.exporter.unix.node.targets
+  rule {
+    target_label = "job"
+    replacement  = "nodeexporter"
+  }
+  rule {
+    target_label = "instance"
+    replacement  = "nodeexporter:9100"
+  }
+}
+discovery.relabel "cadvisor" {
+  targets = prometheus.exporter.cadvisor.containers.targets
+  rule {
+    target_label = "job"
+    replacement  = "cadvisor"
+  }
+  rule {
+    target_label = "instance"
+    replacement  = "cadvisor:8080"
+  }
+}
+
+prometheus.scrape "nodeexporter" {
+  targets = discovery.relabel.node.output
+  scrape_interval = "15s"
+  forward_to = [prometheus.remote_write.out.receiver]
+}
+prometheus.scrape "cadvisor" {
+  targets = discovery.relabel.cadvisor.output
+  scrape_interval = "15s"
+  forward_to = [prometheus.remote_write.out.receiver]
+}

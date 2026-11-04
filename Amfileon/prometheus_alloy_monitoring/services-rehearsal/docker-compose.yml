@@ -1,0 +1,152 @@
+# Local rehearsal for the ClickHouse / Redis / GitLab monitoring (prometheus_alloy_monitoring).
+#
+#   ./setup.sh            generate certs, passwords and configs (with the REAL generator/scripts)
+#   docker compose up -d
+#   open http://localhost:3002   (admin / admin)    — GitLab UI: http://localhost:8929 (~5 min to boot)
+#   docker compose down -v
+#
+# Everything is "host db1". Uses the same dashboards (../grafana-local/dashboards), the same
+# generated Alloy config, the same ClickHouse <prometheus> edit, the same gitlab.rb lines and the
+# same alert rules as production. Only remote_write targets one local Prometheus without auth.
+name: amf-services-rehearsal
+
+services:
+  # ── ClickHouse ────────────────────────────────────────────────────────────────────────────────
+  keeper:
+    image: clickhouse/clickhouse-keeper:26.3-alpine
+    volumes:
+      - ./build/clickhouse/keeper.xml:/etc/clickhouse-keeper/keeper_config.xml:ro
+    networks:
+      net:
+        aliases: [db1.production.keeper.amf]
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:26.3-alpine
+    environment:
+      CLICKHOUSE_USER: load
+      CLICKHOUSE_PASSWORD: load
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "0"
+    ulimits:
+      nofile: { soft: 262144, hard: 262144 }
+    volumes:
+      - ./build/clickhouse/config.xml:/etc/clickhouse-server/config.d/config.xml:ro
+    depends_on: [keeper]
+    networks:
+      net:
+        aliases: [db1.production.ch.amf]
+
+  # ── Redis ─────────────────────────────────────────────────────────────────────────────────────
+  redis-production:          # TLS only + password, like redis-production-db1
+    image: redis:7.4-alpine
+    command: >
+      redis-server --port 0 --tls-port 46379
+      --tls-cert-file /certs/redis.crt --tls-key-file /certs/redis.key
+      --tls-ca-cert-file /certs/ca.pem --tls-auth-clients no
+      --requirepass ${REDIS_PROD_PW:?run ./setup.sh}
+    volumes:
+      - ./build/certs:/certs:ro
+    networks:
+      net:
+        aliases: [production.redis.amf]
+
+  redis-staging:
+    image: redis:7.4-alpine
+    command: redis-server --port 26379
+    networks: [net]
+
+  redis-sentinel-staging:
+    image: redis:7.4-alpine
+    command: ["sh", "-c", "printf 'port 26380\\nsentinel resolve-hostnames yes\\nsentinel monitor staging redis-staging 26379 1\\n' > /tmp/sentinel.conf && exec redis-sentinel /tmp/sentinel.conf"]
+    depends_on: [redis-staging]
+    networks: [net]
+
+  # ── GitLab ────────────────────────────────────────────────────────────────────────────────────
+  gitlab:
+    image: gitlab/gitlab-ce:latest
+    hostname: gitlab-ee
+    shm_size: 256m
+    environment:
+      # the exact lines from deploy/services/gitlab/gitlab.rb.snippet, loaded with from_file
+      GITLAB_OMNIBUS_CONFIG: |
+        external_url 'http://localhost:8929'
+        nginx['listen_port'] = 80
+        puma['worker_processes'] = 2
+        sidekiq['concurrency'] = 5
+        from_file '/etc/amf/gitlab.rb.snippet'
+    ports:
+      - "127.0.0.1:8929:80"
+    volumes:
+      - ../deploy/services/gitlab/gitlab.rb.snippet:/etc/amf/gitlab.rb.snippet:ro
+    networks:
+      net:
+        aliases: [gitlab-ee]
+
+  # ── monitoring ────────────────────────────────────────────────────────────────────────────────
+  alloy:
+    image: grafana/alloy:v1.21.2
+    command: [run, --disable-reporting, --server.http.listen-addr=0.0.0.0:12345,
+              --storage.path=/var/lib/alloy/data, /etc/alloy]
+    environment:
+      ALLOY_HTTP_PASSWORD: ${ALLOY_HTTP_PASSWORD:?run ./setup.sh}
+    env_file: [build/redis.env]      # REDIS_PASSWORD_<NAME>, as in production
+    volumes:
+      - ./build/alloy:/etc/alloy:ro
+      - ./build/certs/ca.pem:/etc/alloy-ca/amfileon-ca.pem:ro
+    ports:
+      - "127.0.0.1:12346:12345"    # Alloy UI (admin / ALLOY_HTTP_PASSWORD from .env)
+    networks: [net]
+
+  prometheus:
+    image: prom/prometheus:v3.15.1
+    command: [--config.file=/etc/prometheus/prometheus.yml, --web.enable-remote-write-receiver,
+              --storage.tsdb.retention.time=2d]
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ../deploy/db1/prometheus/alert.rules:/etc/prometheus/alert.rules:ro
+    ports:
+      - "127.0.0.1:19092:9090"
+    networks: [net]
+
+  grafana:
+    image: grafana/grafana:12.0.2
+    environment:
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_PLUGINS_PREINSTALL_DISABLED: "true"
+      GF_NEWS_NEWS_FEED_ENABLED: "false"
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/amf-clickhouse.json
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ../grafana-local/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "127.0.0.1:3002:3000"
+    networks: [net]
+
+  # ── traffic ───────────────────────────────────────────────────────────────────────────────────
+  load-clickhouse:
+    image: clickhouse/clickhouse-server:26.3-alpine
+    entrypoint: [sh, /load.sh, ch]
+    volumes: [./load/load.sh:/load.sh:ro]
+    depends_on: [clickhouse]
+    networks: [net]
+
+  load-redis:
+    image: redis:7.4-alpine
+    entrypoint: [sh, /load.sh, redis]
+    environment:
+      REDIS_PROD_PW: ${REDIS_PROD_PW}
+    volumes:
+      - ./load/load.sh:/load.sh:ro
+      - ./build/certs:/certs:ro
+    depends_on: [redis-production, redis-staging]
+    networks: [net]
+
+  load-gitlab:
+    image: busybox:1.37
+    entrypoint: [sh, /load.sh, gitlab]
+    volumes: [./load/load.sh:/load.sh:ro]
+    depends_on: [gitlab]
+    networks: [net]
+
+networks:
+  net: {}

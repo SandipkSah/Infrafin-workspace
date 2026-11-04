@@ -1,0 +1,49 @@
+# Phase 2 rehearsal: can Alloy's BUILT-IN node-exporter + cAdvisor replace dockprom's exporters?
+#
+#   reference: node-exporter v1.9.1 + cAdvisor v0.52.1 (the versions dockprom runs on the hosts),
+#              scraped by an Alloy exactly like today            → source="dockprom"
+#   candidate: one Alloy with prometheus.exporter.unix + .cadvisor → source="builtin"
+#   both push to one Prometheus; compare.py diffs metrics, labels and values.
+name: amf-phase2
+
+services:
+  prometheus:
+    image: prom/prometheus:v3.15.1
+    entrypoint: ["/bin/sh", "-c", "printf 'global: {}\\n' > /tmp/p.yml && exec /bin/prometheus --config.file=/tmp/p.yml --web.enable-remote-write-receiver --storage.tsdb.path=/prometheus"]
+    ports: ["127.0.0.1:19091:9090"]
+
+  # ── reference: what dockprom runs today (same images, flags and mounts) ──
+  nodeexporter:
+    image: prom/node-exporter:v1.9.1
+    volumes: [/proc:/host/proc:ro, /sys:/host/sys:ro, /:/rootfs:ro]
+    command:
+      - '--path.procfs=/host/proc'
+      - '--path.rootfs=/rootfs'
+      - '--path.sysfs=/host/sys'
+      - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)'
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.52.1
+    privileged: true
+    devices: [/dev/kmsg:/dev/kmsg]
+    volumes: [/:/rootfs:ro, /var/run:/var/run:ro, /sys:/sys:ro, /var/lib/docker:/var/lib/docker:ro]
+  alloy-ref:
+    image: grafana/alloy:v1.21.2
+    command: [run, --disable-reporting, --storage.path=/tmp/a, /etc/alloy]
+    environment: { AMF_HOST: rehearsal }
+    volumes: [./alloy-ref:/etc/alloy:ro]
+
+  # ── candidate: Alloy with built-in exporters (needs the exporters' mounts + privileges) ──
+  alloy-builtin:
+    image: grafana/alloy:v1.21.2
+    command: [run, --disable-reporting, --storage.path=/tmp/a, /etc/alloy]
+    environment: { AMF_HOST: rehearsal }
+    privileged: true
+    devices: [/dev/kmsg:/dev/kmsg]
+    volumes:
+      - ./alloy-builtin:/etc/alloy:ro
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /sys:/sys:ro            # cAdvisor reads /sys/fs/cgroup at this exact path
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /var/lib/docker:/var/lib/docker:ro

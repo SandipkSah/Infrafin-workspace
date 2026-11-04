@@ -3,6 +3,9 @@
 #   config/common.alloy   same everywhere (remote_write + nodeexporter/cadvisor/pushgateway)
 #   config/host.alloy     this host's extra exporters (copied from deploy/alloy/hosts/<host>.alloy)
 #   .env                  ALLOY_PASSWORD (secret), AMF_HOST, AMF_HOST_IP
+#   redis.env             REDIS_PASSWORD_<NAME> per Redis instance (root, 600; written on the host by
+#                         deploy/services/fill-redis-env.sh, never by stage.sh; may be empty)
+#   docker-compose.override.yaml   extra Docker networks to reach ClickHouse/GitLab (hosts/<host>.compose.yaml)
 #
 # Joins dockprom's existing `monitor-net` network to scrape its exporters by name; dockprom is
 # not modified. Port 12345 (Alloy's default HTTP port) is published on the host's LAN IP so db1's
@@ -21,6 +24,8 @@ services:
       ALLOY_PASSWORD: ${ALLOY_PASSWORD:?set in .env}
       AMF_HOST: ${AMF_HOST:?set in .env}
       ALLOY_HTTP_PASSWORD: ${ALLOY_HTTP_PASSWORD:?set in .env}   # Alloy UI login (user admin)
+    env_file:
+      - redis.env                          # Redis passwords for the redis exporters
     ports:
       - "${AMF_HOST_IP:?set in .env}:12345:12345"
     volumes:

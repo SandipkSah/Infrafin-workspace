@@ -1,0 +1,9 @@
+// Rehearsal stand-in for config/common.alloy: one Prometheus instead of db1 + db2, no auth.
+// The generated services.alloy forwards to prometheus.remote_write.both, like in production.
+prometheus.remote_write "both" {
+  external_labels = { host = "db1" }
+
+  endpoint {
+    url = "http://prometheus:9090/api/v1/write"
+  }
+}

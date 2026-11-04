@@ -28,6 +28,8 @@ scrape_configs:
       - { targets: ['10.10.10.31:12345'], labels: { host: cpu2 } }
       - { targets: ['10.10.10.40:12345'], labels: { host: gpu1 } }
       - { targets: ['10.10.10.13:12345'], labels: { host: prod3 } }
+      - { targets: ['10.10.10.14:12345'], labels: { host: prod4 } }
+      - { targets: ['10.10.10.12:12345'], labels: { host: prod2 } }   # Windows (Alloy service)
       # prod4 (10.10.10.14): add when access is sorted out
     metric_relabel_configs:
       - action: drop

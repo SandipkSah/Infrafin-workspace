@@ -23,7 +23,7 @@ printed.
 | 2 | Prometheus + Alertmanager on **db1** | [db1/INSTALL.md](db1/INSTALL.md) | `./verify-prometheus.sh db1`, healthchecks.io shows "up" |
 | 3 | Alloy on **cpu2** (pilot) | [alloy/INSTALL.md](alloy/INSTALL.md) | `./verify-host.sh cpu2` |
 | 4 | Alloy on db1, db2, cpu1, gpu1, prod3 | same | `./verify-host.sh <host>` |
-| 5 | Grafana datasources in dockprom's Grafana on db1 | (UI, see below) | dashboards show data |
+| 5 | Grafana with all dashboards on db1 (`https://grafana.amf`) | [db1/grafana/INSTALL.md](db1/grafana/INSTALL.md) | log in, Fleet shows 6 hosts |
 | 6 | **Lock down permissions** | below | `ssa` can no longer write |
 
 > **Open item — Watchdog heartbeat not set up yet (2026-10-26).** `HEALTHCHECKS_PING_URL` in
@@ -32,14 +32,10 @@ printed.
 > grace 5 min), run `./fill-db1-env.sh` and paste the URL, then
 > `ssh -t db1 'cd /srv/docker/prometheus && sudo docker compose up -d alertmanager'`.
 
-## 5. Grafana datasources
+## 5. Grafana (`https://grafana.amf`)
 
-In `https://grafana.db1.amf` → *Connections → Data sources → Add → Prometheus*, twice:
-
-| Name | URL | Auth |
-|---|---|---|
-| `Prometheus-db1` | `https://db1.prometheus.amf` | Basic auth: `grafana` / password from `secrets/grafana.env`; *With CA cert*: paste `ca/amfileon-ca.pem` |
-| `Prometheus-db2` | `https://db2.prometheus.amf` | same |
+Own Grafana on db1 with both datasources and all dashboards provisioned — see
+[db1/grafana/INSTALL.md](db1/grafana/INSTALL.md). dockprom's Grafana (`grafana.db1.amf`) is not changed.
 
 ## 6. Final step — lock down permissions (mandatory, after everything is verified)
 
@@ -49,12 +45,13 @@ the existing services (`/srv/docker/dockprom`, `proxy`, …: `root:root`, dirs 7
 `ssa` — and therefore Claude — can no longer edit them. On **every** host:
 
 ```bash
-for d in /srv/docker/prometheus /srv/docker/alloy; do
+for d in /srv/docker/prometheus /srv/docker/alloy /srv/docker/grafana-dashboards; do
   [ -d "$d" ] || continue
   sudo chown -R root:root "$d"
   sudo find "$d" -type d -exec chmod 755 {} +
   sudo find "$d" -type f -exec chmod 644 {} +
   sudo chmod 600 "$d/.env"      # decision: 600 (recommended) or leave 644 like the other services' .env
+  [ -f "$d/redis.env" ] && sudo chmod 600 "$d/redis.env"   # Redis passwords: always 600
 done
 stat -c '%A %U:%G %n' /srv/docker/prometheus /srv/docker/alloy /srv/docker/*/.env 2>/dev/null | grep -E 'prometheus|alloy'
 ```

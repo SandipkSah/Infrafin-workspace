@@ -4,7 +4,8 @@ panels that return no data or an error.
 
     python3 check_dashboards.py [--ds prom-db1] [--host db1] [--database db1]
 
-Variables are substituted with concrete values; $__rate_interval → 1m, $__range → 1h.
+Variables are substituted with concrete values; $__rate_interval → 1m, $__range → 1h; custom
+drop-downs (e.g. Cluster) use their default option, or --cluster <name>.
 """
 import argparse
 import base64
@@ -19,11 +20,14 @@ ap.add_argument("--auth", default="admin:admin")
 ap.add_argument("--ds", default="prom-db1")
 ap.add_argument("--host", default="db1")
 ap.add_argument("--database", default="db1")
+ap.add_argument("--cluster", default=None, help="option of the Cluster drop-down (default: its first)")
 args = ap.parse_args()
 AUTH = "Basic " + base64.b64encode(args.auth.encode()).decode()
 
 
-def query(expr, instant, ds):
+def query(expr, instant, ds, custom=()):
+    for name, text, value in custom:      # ${x:text} before $x
+        expr = expr.replace(f"${{{name}:text}}", text).replace(f"${name}", value)
     for k, v in {"$__rate_interval": "1m", "$__range": "1h", "$host": args.host,
                  "$database": args.database}.items():
         expr = expr.replace(k, v)
@@ -56,11 +60,16 @@ bad = 0
 for f in sorted(pathlib.Path(__file__).parent.joinpath("dashboards").glob("*.json")):
     d = json.loads(f.read_text())
     print(f"\n{d['title']}")
+    custom = []
+    for v in d.get("templating", {}).get("list", []):
+        if v.get("type") == "custom":
+            o = next((o for o in v["options"] if o["text"] == args.cluster), v["options"][0])
+            custom.append((v["name"], o["text"], o["value"]))
     for p in panels(d):
         for t in p.get("targets", []):
             uid = (t.get("datasource") or {}).get("uid", "${ds}")
             ds = args.ds if uid == "${ds}" else uid          # pinned panels keep their own datasource
-            status, info = query(t["expr"], t.get("instant", False), ds)
+            status, info = query(t["expr"], t.get("instant", False), ds, custom)
             mark = "  " if status == "ok" else "!!"
             if status != "ok":
                 bad += 1
