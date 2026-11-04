@@ -14,6 +14,15 @@ description: Rules for any work that touches the Amfileon servers (db1, db2, cpu
   permission."* A `permission denied` on the docker socket is expected — do not try to work around it.
 - **prod4** is out of scope until the user has access; its host key is unknown — never accept it.
 
+## Never touch services started by someone else
+
+Only services Claude created in this work (`/srv/docker/prometheus`, `/srv/docker/alloy`) may be
+changed. Everything else — dockprom, nginx-proxy, Loki/promtail, databases, the applications — was set
+up by other people: **read-only** (inspect, scrape their exporters, report findings), never modify,
+slim down, stop or remove them, and never propose a plan that does. Findings about them go to their
+owner as recommendations (see `prometheus_alloy_monitoring/FOLLOW-UPS.md`).
+Exception only when the user explicitly asks for a specific change to a specific service.
+
 ## How a change is delivered
 
 1. Prepare everything in the repo (compose file, configs, `.env.example`, `INSTALL.md` with every
