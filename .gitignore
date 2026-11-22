@@ -75,3 +75,12 @@ sdlc/
 
 # Nested repo (own remote on gitlab.amf)
 Amfileon/conda-upgrade/conda-image/
+
+# Secrets: never commit (pre-commit + gitleaks also block them, see .pre-commit-config.yaml)
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+id_rsa*
+id_ed25519*

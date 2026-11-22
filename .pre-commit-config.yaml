@@ -1,0 +1,24 @@
+# Secret scanning for the whole workspace (Amfileon, nexdos, sdlc, ...).
+# One-time setup per clone:   brew install gitleaks pre-commit && pre-commit install
+# Check before committing:    pre-commit run
+# Scan all tracked files:     gitleaks dir --redact .
+# Scan the full git history:  gitleaks git --redact .
+# A blocked commit: remove the secret (env var / secrets file in .gitignore). For a false positive,
+# add `# gitleaks:allow` at the end of that line, or put its fingerprint in .gitleaksignore.
+repos:
+  - repo: local
+    hooks:
+      - id: gitleaks
+        name: gitleaks (secret scan of staged changes)
+        # system gitleaks (Homebrew) — the upstream hook needs a Go toolchain download
+        entry: gitleaks git --pre-commit --staged --redact --no-banner --verbose
+        language: system
+        pass_filenames: false
+        always_run: true
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: detect-private-key    # PEM / SSH private keys
+      - id: check-added-large-files
+        args: [--maxkb=5000]      # catches dumps and backups added by mistake
