@@ -1,0 +1,7 @@
+# the change for db1: Loki's working data (WAL, local index, compactor) in a named volume
+services:
+  loki:
+    volumes:
+      - loki_data:/loki
+volumes:
+  loki_data: {}

@@ -21,8 +21,19 @@ if [ -d "$SRC" ]; then
      && ! sudo grep -q 'Alloy\|alloy\|Prometheus' "$DEST/docker-compose.yaml"; then
     echo "$DEST exists and is not from prometheus_alloy_monitoring — stopping, nothing changed" >&2; exit 1
   fi
-  # values filled in on the server (SMTP, admin password) must survive; Alloy's .env is regenerated
-  if [ "$SERVICE" != alloy ] && sudo test -f "$DEST/.env"; then rm -f "$SRC/.env"; fi
+  # values filled in on the server (SMTP, admin password) must survive; Alloy's .env is regenerated.
+  # Keys that are new in the staged .env (e.g. GRAFANA_LOKI_PASSWORD) are appended; existing keys
+  # keep their server value. Nothing is printed.
+  if [ "$SERVICE" != alloy ] && sudo test -f "$DEST/.env"; then
+    if [ -f "$SRC/.env" ]; then
+      while IFS= read -r line; do
+        key=${line%%=*}
+        case "$key" in ''|\#*) continue ;; esac
+        sudo grep -q "^$key=" "$DEST/.env" || { printf '%s\n' "$line" | sudo tee -a "$DEST/.env" >/dev/null; echo "    added $key to $DEST/.env"; }
+      done < "$SRC/.env"
+    fi
+    rm -f "$SRC/.env"
+  fi
   OWNER=$(sudo stat -c %U "$DEST" 2>/dev/null || echo ssa)
   sudo mkdir -p "$DEST"
   sudo cp -a "$SRC"/. "$DEST"/

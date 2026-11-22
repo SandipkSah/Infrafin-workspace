@@ -55,10 +55,17 @@ Login page shows "Sign in with authentik"; the local `admin` login stays as fall
 - Provider: OAuth2/OpenID, Confidential, grant types Authorization Code + Refresh token only,
   redirect URI `https://grafana.amf/login/generic_oauth` (strict, authorization), logout URI
   `https://grafana.amf/logout`, extra scope `authentik default OAuth Mapping: Application Entitlements`.
-- **Who may log in** = application bindings: groups `Grafana Admins`, `Grafana Users`.
+- **Who may log in** = application binding: group `Grafana Users` only (policy engine mode ANY).
+  Group `Grafana Admins` has **`Grafana Users` as parent** (since 2026-11-13), so admins only need to
+  be in `Grafana Admins` — no double membership.
 - **Role** = application entitlements (authentik's documented way for Grafana):
-  `Grafana Admins` → Admin (bound to group `Grafana Admins`), `Grafana Viewers` → Viewer (bound to
-  group `Grafana Users`). Names must match `GF_AUTH_GENERIC_OAUTH_ROLE_ATTRIBUTE_PATH`.
+  `Grafana Admins` → Admin (bound to groups `Grafana Admins` and `admin`), `Grafana Viewers` → Viewer
+  (bound to group `Grafana Users`). Names must match `GF_AUTH_GENERIC_OAUTH_ROLE_ATTRIBUTE_PATH`.
+  Members of `admin` (authentik superusers) get Admin but can only log in if they are also in one of
+  the two Grafana groups.
+- Grafana only assigns **Admin or Viewer** from SSO. Any other role (e.g. Editor from an invitation or
+  a manual change) is overwritten at the user's next "Sign in with authentik". SSO admins are org
+  Admins, not Grafana server admins (only the local `admin` account is).
 - Access is managed only in authentik: Grafana re-applies the role at every login (strict — without
   one of the two entitlements the login is refused).
 

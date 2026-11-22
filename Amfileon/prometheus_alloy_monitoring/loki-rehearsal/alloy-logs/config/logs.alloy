@@ -1,0 +1,191 @@
+// Logs → Loki on db1 (https://db1.loki.amf), same on every Linux host. Searchable in grafana.amf
+// (datasource "Loki"); Loki keeps 30 days (deploy/loki/enable-loki-retention.sh).
+//
+//   job="docker"   every container's stdout/stderr, read through docker-socket-proxy (read-only
+//                  API: list containers + read logs, nothing else) — no service is touched
+//   job="journal"  the host's systemd journal (ssh, sudo, kernel, docker daemon, …)
+//
+// Not collected:
+//   · containers labelled logging=promtail — promtail still ships them (no duplicates); they move
+//     over to Alloy when promtail is retired
+//   · secret stores (vault, infisical, yopass, shhh)
+// Passwords, tokens, keys and basic-auth URLs are replaced by <redacted> before anything leaves
+// the host.
+// Labels: host, job, container, compose_project, compose_service, stream | unit, level (journal).
+
+loki.write "db1" {
+  external_labels = { host = sys.env("AMF_HOST") }
+
+  endpoint {
+    // LOKI_URL is set only in the local rehearsal
+    url = coalesce(sys.env("LOKI_URL"), "https://db1.loki.amf/loki/api/v1/push")
+    tls_config {
+      ca_file = "/etc/alloy-ca/amfileon-ca.pem"
+    }
+    basic_auth {
+      username = "alloy"
+      password = sys.env("LOKI_PASSWORD")
+    }
+  }
+}
+
+// ---- secrets out --------------------------------------------------------------------------------
+// Containers only: on its first start Alloy reads every container's WHOLE log history (Docker
+// keeps it unlimited on most hosts) — millions of lines. Ship only the last 24 h; older lines stay
+// in the local Docker logs. Also covers catching up after an Alloy outage of up to 24 h.
+// Kept separate from "redact" so that this flood never holds up the journal (seen on db1).
+loki.process "docker_recent" {
+  forward_to = [loki.process.redact.receiver]
+
+  stage.drop {
+    older_than          = "24h"
+    drop_counter_reason = "older_than_24h"
+  }
+}
+
+loki.process "redact" {
+  forward_to = [loki.write.db1.receiver]
+
+  // password=…, "token": "…", api_key: …, secret=…, access_key=…  (only the value is replaced)
+  stage.replace {
+    expression = "(?i)(?:passw(?:or)?d|pwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key)[\"']?\\s*[:=]\\s*[\"']?([^\\s\"',;&}]+)"
+    replace    = "<redacted>"
+  }
+  // Authorization: Basic …/Bearer …
+  stage.replace {
+    expression = "(?i)(?:authorization|proxy-authorization)[\"']?\\s*[:=]\\s*[\"']?(?:basic|bearer|token)\\s+([^\\s\"',;]+)"
+    replace    = "<redacted>"
+  }
+  // scheme://user:password@host
+  stage.replace {
+    expression = "[a-zA-Z][a-zA-Z0-9+.-]*://[^:/@\\s]+:([^@/\\s]+)@"
+    replace    = "<redacted>"
+  }
+
+  // ---- crash signals → metrics (alert rules RedisCrashLoop / SentinelFailoverLoop on db1) --------
+  // Counts log lines that mean "this Redis just died on start" or "these sentinels cannot fail over",
+  // per container. Works for every container, also for those not in the Redis metrics targets — the
+  // two loops found on 2026-11-13 (prod4 redis-staging-prod4, db1 redis) ran unnoticed for months.
+  // Exported via prometheus.exporter.self below (only these two counters are forwarded).
+  stage.match {
+    selector = "{job=\"docker\"} |~ \"(server aborting|Fatal error loading the DB)\""
+    stage.metrics {
+      metric.counter {
+        name        = "crash_lines_total"
+        prefix      = "amf_log_redis_"
+        description = "Redis log lines saying the server aborted on start"
+        match_all   = true
+        action      = "inc"
+      }
+    }
+  }
+  stage.match {
+    selector = "{job=\"docker\"} |= \"-failover-abort-no-good-slave\""
+    stage.metrics {
+      metric.counter {
+        name        = "failover_abort_lines_total"
+        prefix      = "amf_log_sentinel_"
+        description = "Sentinel log lines: failover aborted, no replica to promote"
+        match_all   = true
+        action      = "inc"
+      }
+    }
+  }
+}
+
+// Alloy's own metrics registry holds the counters above; forward only those (host label added by
+// prometheus.remote_write.both in common.alloy).
+prometheus.exporter.self "alloy" { }
+
+prometheus.scrape "log_signals" {
+  targets         = prometheus.exporter.self.alloy.targets
+  job_name        = "alloy-log-signals"
+  scrape_interval = "30s"
+  // the exporter is served by Alloy's own HTTP server, which requires the login (http.alloy)
+  basic_auth {
+    username = "admin"
+    password = sys.env("ALLOY_HTTP_PASSWORD")
+  }
+  forward_to = [prometheus.relabel.log_signals.receiver]
+}
+
+prometheus.relabel "log_signals" {
+  forward_to = [prometheus.remote_write.both.receiver]
+
+  rule {
+    source_labels = ["__name__"]
+    regex         = "amf_log_.*"
+    action        = "keep"
+  }
+}
+
+// ---- containers ---------------------------------------------------------------------------------
+discovery.docker "containers" {
+  host             = "tcp://docker-socket-proxy:2375"
+  refresh_interval = "15s"
+}
+
+discovery.relabel "containers" {
+  targets = discovery.docker.containers.targets
+
+  rule {
+    source_labels = ["__meta_docker_container_label_logging"]
+    regex         = "promtail"
+    action        = "drop"
+  }
+  rule {
+    source_labels = ["__meta_docker_container_name", "__meta_docker_container_label_com_docker_compose_project"]
+    regex         = "(?i).*(vault|infisical|yopass|shhh).*"
+    action        = "drop"
+  }
+  rule {
+    source_labels = ["__meta_docker_container_name"]
+    regex         = "/(.*)"
+    target_label  = "container"
+  }
+  rule {
+    source_labels = ["__meta_docker_container_label_com_docker_compose_project"]
+    target_label  = "compose_project"
+  }
+  rule {
+    source_labels = ["__meta_docker_container_label_com_docker_compose_service"]
+    target_label  = "compose_service"
+  }
+  rule {
+    source_labels = ["__meta_docker_container_log_stream"]
+    target_label  = "stream"
+  }
+  rule {
+    target_label = "job"
+    replacement  = "docker"
+  }
+}
+
+loki.source.docker "containers" {
+  host          = "tcp://docker-socket-proxy:2375"
+  targets       = discovery.relabel.containers.output
+  relabel_rules = discovery.relabel.containers.rules
+  forward_to    = [loki.process.docker_recent.receiver]
+}
+
+// ---- systemd journal ----------------------------------------------------------------------------
+loki.relabel "journal" {
+  forward_to = []
+
+  rule {
+    source_labels = ["__journal__systemd_unit"]
+    target_label  = "unit"
+  }
+  rule {
+    source_labels = ["__journal_priority_keyword"]
+    target_label  = "level"
+  }
+}
+
+loki.source.journal "host" {
+  path          = "/var/log/journal"
+  max_age       = "12h"                     // first start: only the last 12 h, no backfill
+  labels        = { job = "journal" }
+  relabel_rules = loki.relabel.journal.rules
+  forward_to    = [loki.process.redact.receiver]
+}

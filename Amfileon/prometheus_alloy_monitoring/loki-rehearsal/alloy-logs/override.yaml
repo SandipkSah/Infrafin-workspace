@@ -1,0 +1,20 @@
+# Rehearsal of deploy/alloy (logs part) on the Mac:
+#   docker compose -p alloy-logs-rehearsal -f ../../deploy/alloy/docker-compose.yaml -f override.yaml up -d
+# Only logs.alloy (+ http.alloy) is loaded — no metrics are pushed to the real Prometheus.
+# Pushes straight to the rehearsal Loki (no nginx); the journal is an empty stand-in (macOS has none).
+services:
+  alloy:
+    environment:
+      LOKI_URL: http://loki:3100/loki/api/v1/push
+    env_file: !reset []
+    volumes:
+      - ./config:/etc/alloy:ro
+      - ./fake-journal:/var/log/journal:ro
+      - ./fake-journal:/run/log/journal:ro
+      - ./machine-id:/etc/machine-id:ro
+    networks:
+      - rehearsal
+networks:
+  rehearsal:
+    name: loki-rehearsal_loki
+    external: true

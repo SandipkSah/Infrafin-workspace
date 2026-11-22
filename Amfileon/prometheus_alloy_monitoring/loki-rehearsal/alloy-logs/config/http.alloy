@@ -1,0 +1,15 @@
+// Alloy's own web server (port 12345, published on the LAN for db1's host-alive check):
+// the UI, its API and /-/reload need a login; only /metrics and /-/ready stay open, because
+// db1's Prometheus scrapes them to detect a dead host and they contain no configuration.
+http {
+  auth {
+    basic {
+      username = "admin"
+      password = sys.env("ALLOY_HTTP_PASSWORD")
+    }
+    filter {
+      paths                       = ["/metrics", "/-/ready", "/-/healthy"]
+      authenticate_matching_paths = false
+    }
+  }
+}

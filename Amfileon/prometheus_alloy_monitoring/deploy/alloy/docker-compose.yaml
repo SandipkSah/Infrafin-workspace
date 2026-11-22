@@ -1,8 +1,9 @@
-# /srv/docker/alloy on every host — pushes this host's metrics to Prometheus on db1 AND db2.
+# /srv/docker/alloy on every host — pushes this host's metrics to Prometheus on db1 AND db2,
+# and its logs (containers + systemd journal) to Loki on db1 (config/logs.alloy).
 #
 #   config/common.alloy   same everywhere (remote_write + nodeexporter/cadvisor/pushgateway)
 #   config/host.alloy     this host's extra exporters (copied from deploy/alloy/hosts/<host>.alloy)
-#   .env                  ALLOY_PASSWORD (secret), AMF_HOST, AMF_HOST_IP
+#   .env                  ALLOY_PASSWORD, ALLOY_HTTP_PASSWORD, LOKI_PASSWORD (secrets), AMF_HOST, AMF_HOST_IP
 #   redis.env             REDIS_PASSWORD_<NAME> per Redis instance (root, 600; written on the host by
 #                         deploy/services/fill-redis-env.sh, never by stage.sh; may be empty)
 #   docker-compose.override.yaml   extra Docker networks to reach ClickHouse/GitLab (hosts/<host>.compose.yaml)
@@ -14,6 +15,9 @@ services:
   alloy:
     image: grafana/alloy:v1.21.2
     restart: unless-stopped
+    # never more than 2 cores: the first start reads every container's whole Docker log history
+    # (hours on hosts without Docker log rotation) — production containers must not feel it
+    cpus: 2.0
     command:
       - run
       - --disable-reporting                # no anonymous usage stats to Grafana Labs
@@ -24,6 +28,7 @@ services:
       ALLOY_PASSWORD: ${ALLOY_PASSWORD:?set in .env}
       AMF_HOST: ${AMF_HOST:?set in .env}
       ALLOY_HTTP_PASSWORD: ${ALLOY_HTTP_PASSWORD:?set in .env}   # Alloy UI login (user admin)
+      LOKI_PASSWORD: ${LOKI_PASSWORD:?set in .env}               # db1.loki.amf, user alloy
     env_file:
       - redis.env                          # Redis passwords for the redis exporters
     ports:
@@ -31,9 +36,42 @@ services:
     volumes:
       - ./config:/etc/alloy:ro
       - ./amfileon-ca.pem:/etc/alloy-ca/amfileon-ca.pem:ro
-      - alloy_data:/var/lib/alloy/data   # the WAL: survives restarts, so nothing buffered is lost
+      - alloy_data:/var/lib/alloy/data   # the WAL + log read positions: survive restarts
+      # systemd journal, read-only (loki.source.journal)
+      - /var/log/journal:/var/log/journal:ro
+      - /run/log/journal:/run/log/journal:ro
+      - /etc/machine-id:/etc/machine-id:ro
+    depends_on:
+      - docker-socket-proxy
     networks:
       - monitor
+      - logs
+
+  # Read-only window onto the Docker API for log collection. Exactly these GET requests pass:
+  #   list containers · inspect one container · read its logs · list networks · events · ping/version
+  # Everything else — export/archive (container files), exec, start/stop, any POST/DELETE, images,
+  # volumes — is refused with 403. Alloy never gets docker.sock itself; the proxy answers only the
+  # alloy container, on the internal `logs` network (no port published, not on monitor-net).
+  docker-socket-proxy:
+    image: wollomatic/socket-proxy:1.10.0
+    restart: unless-stopped
+    command:
+      - -loglevel=info
+      - -listenip=0.0.0.0
+      - -allowfrom=alloy
+      - '-allowGET=(/v1\.[0-9]+)?/(_ping|version|events|networks|containers/json|containers/[a-zA-Z0-9_.-]+/(json|logs))'
+      - -allowHEAD=(/v1\.[0-9]+)?/_ping
+      - -watchdoginterval=3600
+      - -stoponwatchdog
+      - -shutdowngracetime=5
+    user: "0:0"                 # the socket is root:docker 660; the docker gid differs per host
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    read_only: true
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - logs
 
 volumes:
   alloy_data: {}
@@ -42,3 +80,5 @@ networks:
   monitor:
     name: dockprom_monitor-net
     external: true
+  logs:
+    internal: true        # Alloy ↔ docker-socket-proxy only, no outside access

@@ -76,6 +76,12 @@ if ssh "$HOST" "test -d /srv/docker/$SERVICE -a -w /srv/docker/$SERVICE"; then
   DEST=/srv/docker/$SERVICE
   # never overwrite a .env that is already there (it may hold values filled in on the server)
   if [ "$SERVICE" != alloy ] && ssh "$HOST" "test -f $DEST/.env"; then
+    # append only the keys the server's .env does not have yet (names compared, values never shown)
+    missing=$(ssh "$HOST" "sed -n 's/=.*//p' $DEST/.env" | grep -vxF -f - <(sed -n 's/=.*//p' "$STAGE/.env") || true)
+    if [ -n "$missing" ]; then
+      grep -E "^($(echo $missing | tr ' ' '|'))=" "$STAGE/.env" | ssh "$HOST" "cat >> $DEST/.env"
+      echo "(added to the existing $DEST/.env on $HOST: $(echo $missing))"
+    fi
     rm "$STAGE/.env"
     echo "(kept the existing $DEST/.env on $HOST)"
   fi
