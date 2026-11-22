@@ -21,7 +21,11 @@ OUT = pathlib.Path(__file__).parent / "dashboards"
 HOST_COLORS = {          # categorical slots 1..8, fixed per host
     "db1": "#2a78d6", "db2": "#eb6834", "cpu1": "#1baf7a",
     "cpu2": "#eda100", "gpu1": "#e87ba4", "prod3": "#008300", "prod4": "#6250d6", "prod2": "#e34948",
+    # 9th host: no new hue (palette has 8 slots) — prod1 shares the Windows hosts' red with prod2 and
+    # is told apart by a dashed line (DASHED_HOSTS) and the legend/name
+    "prod1": "#e34948",
 }
+DASHED_HOSTS = {"prod1"}
 SERIES = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#6250d6", "#e34948"]
 GOOD, WARNING, SERIOUS, CRITICAL = "#0ca30c", "#fab219", "#ec835a", "#d03b3b"
 
@@ -76,7 +80,9 @@ def thresholds(*steps):
 def host_overrides(field_name_suffix=""):
     """Pin each host's colour wherever a series/field is named after the host."""
     return [{"matcher": {"id": "byName", "options": h + field_name_suffix},
-             "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": c}}]}
+             "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": c}}]
+                           + ([{"id": "custom.lineStyle", "value": {"fill": "dash", "dash": [10, 6]}}]
+                              if h in DASHED_HOSTS else [])}
             for h, c in HOST_COLORS.items()]
 
 
@@ -208,7 +214,7 @@ CPU_BUSY = ('100 * (1 - avg by (host) (rate(node_cpu_seconds_total{job="nodeexpo
             'mode="idle"}[$__rate_interval])))')
 MEM_USED = ('100 * (1 - max by (host) (node_memory_MemAvailable_bytes{job="nodeexporter"}) '
             '/ max by (host) (node_memory_MemTotal_bytes{job="nodeexporter"}))')
-REAL_FS = 'job="nodeexporter", fstype=~"ext4|xfs|btrfs|zfs|ntfs", mountpoint!~"/boot.*"'   # ntfs: prod2 (Windows)
+REAL_FS = 'job="nodeexporter", fstype=~"ext4|xfs|btrfs|zfs|ntfs", mountpoint!~"/boot.*"'   # ntfs: prod1, prod2 (Windows)
 DISK_USED = (f'100 * (1 - node_filesystem_avail_bytes{{{REAL_FS}}} '
              f'/ node_filesystem_size_bytes{{{REAL_FS}}})')
 PCT_THRESH = thresholds((None, GOOD), (80, WARNING), (90, CRITICAL))
@@ -497,8 +503,8 @@ def monitoring():
                   w=6, h=8, thresh=thresholds((None, GOOD), (1, WARNING)),
                   desc="Silenced alerts are NOT emailed. Should normally be 0."))
     p.append(stat(g, "Hosts sending to both Prometheus", targets('count(count by (host) (up{job="nodeexporter"}))'),
-                  w=6, h=8, thresh=thresholds((None, CRITICAL), (8, GOOD)),
-                  desc="Hosts with node-exporter data arriving through Alloy (expected: 8 — prod2 is Windows)."))
+                  w=6, h=8, thresh=thresholds((None, CRITICAL), (9, GOOD)),
+                  desc="Hosts with node-exporter data arriving through Alloy (expected: 9 — prod1 and prod2 are Windows)."))
     return dashboard("amf-monitoring", "Monitoring health", p, [ds_var()],
                      "Is the monitoring itself healthy?", tags=("monitoring",))
 
