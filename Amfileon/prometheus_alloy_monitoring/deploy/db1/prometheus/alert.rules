@@ -25,7 +25,7 @@ groups:
           description: "db1 cannot reach Alloy on {{ $labels.host }} ({{ $labels.instance }}) for 2 minutes."
 
       - alert: ExporterDown
-        expr: up{job!~"host-alive|prometheus-.*|alertmanager"} == 0
+        expr: up{job!~"host-alive|prometheus-.*|alertmanager|timebase-jvm"} == 0
         for: 5m
         labels:
           severity: warning

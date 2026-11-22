@@ -57,6 +57,7 @@ db1     redis       redis-production-db1                                 product
 db1     redis       redis-sentinel-production-db1                        production             sentinel   rediss://production.redis.amf:46380/46380                 -                                         on
 db1     redis       redis-staging                                        staging                server     rediss://db1.redis.amf:26379/26379                        -                                         on
 db1     redis       redis-sentinel-staging                               staging                sentinel   rediss://db1.redis.amf:26380/26380                        -                                         on
+db1     redis       redis                                                redis8                 server     rediss://db1.redis.amf:36379/36379                        -                                         on
 db2     redis       redis-staging                                        staging                server     rediss://redis.amf:26379/26379                            -                                         on
 db2     redis       redis-sentinel-staging                               staging                sentinel   rediss://redis.amf:26380/26380                            -                                         on
 db2     redis       redis-amfmessages                                    amfmessages            server     10.10.10.21:6391/6379                                     -                                         on
@@ -65,14 +66,15 @@ prod3   redis       redis-sentinel-production-prod3                      product
 prod3   redis       redis-mktdata-production                             marketdata-production  server     10.10.10.13:6382/6379                                     -                                         on
 prod3   redis       redis-GSIND_PROD                                     gsind-production       server     10.10.10.13:6381/6379                                     -                                         on
 # redis-production = the trading app's own Redis (/srv/docker/trading-production).
-# redis-sentinel = /srv/docker/redis (redis:8, db1 + prod3); db1's redis is crash-looping — in progress or abandoned? ask the owner
+# redis-sentinel = /srv/docker/redis (redis:8, db1 + prod3); db1's redis crash-looped until 2026-11-13 (bundled modules
+# loaded twice) — fixed with an entrypoint wrapper (deploy/services/fix-redis8-db1.sh); db1's redis is back on (below)
 prod3   redis       redis-production                                     trading-production     server     10.10.10.13:6379/6379                                     -                                         on
 prod3   redis       redis-sentinel                                       redis8                 sentinel   rediss://prod3.redis.amf:36380/36380                      -                                         off
 prod4   redis       redis-production-prod4                               production             server     rediss://production.redis.amf:46379/46379                 -                                         on
 prod4   redis       redis-sentinel-production-prod4                      production             sentinel   rediss://production.redis.amf:46380/46380                 -                                         on
 prod4   redis       redis-sentinel-staging                               staging                sentinel   rediss://prod4.redis.amf:26380/26380                      -                                         on
-# redis-staging-prod4 is crash-looping (2026-10-30): off until its owner has fixed it
-prod4   redis       redis-staging-prod4                                  staging                server     rediss://prod4.redis.amf:26379/26379                      -                                         off
+# redis-staging-prod4: crash-looped until 2026-11-13 (7.2 image could not read RDB v12) — fixed, back on
+prod4   redis       redis-staging-prod4                                  staging                server     rediss://prod4.redis.amf:26379/26379                      -                                         on
 prod4   redis       redis-mktdata-staging                                marketdata-staging     server     10.10.10.14:6382/6379                                     -                                         on
 prod4   redis       redis-nexdos-staging                                 nexdos-staging         server     10.10.10.14:6380/6379                                     -                                         on
 prod4   redis       redis-GSIND_PAPER_TRADING                            gsind-paper            server     10.10.10.14:6381/6379                                     -                                         on

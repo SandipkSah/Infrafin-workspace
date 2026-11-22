@@ -40,14 +40,25 @@ settings() {   # $1 container → "key value" lines
 }
 get() { printf '%s\n' "$SETTINGS" | awk -v k="$1" '$1 == k { print $2; exit }' | unquote; }
 
-try() {   # $1 container, $2 port, $3.. redis-cli TLS options → last reply line
-  local c=$1 port=$2; shift 2
+try() {   # $1 container, $2 port, $3.. redis-cli TLS options → PONG | NOPASS | the error
+  local c=$1 port=$2 out; shift 2
   if [ -n "$PW" ]; then   # AUTH over stdin, so it never shows up in `ps`
-    printf 'AUTH %s\nPING\n' "$PW" | docker exec -i "$c" redis-cli -p "$port" "$@" 2>&1 | tail -1 || true
+    # Both replies count: AUTH must say OK (until 2026-11-13 only PING was checked, so a password
+    # found in a config file but not active in Redis was reported as "ok")
+    out=$(printf 'AUTH %s\nPING\n' "$PW" | docker exec -i "$c" redis-cli -p "$port" "$@" 2>&1 || true)
+    case "$(printf '%s\n' "$out" | head -1)" in
+      OK) printf '%s\n' "$out" | tail -1 ;;
+      *"without any password configured"*)   # Redis runs WITHOUT a password → the exporter must not send one
+        [ "$(printf '%s\n' "$out" | tail -1)" = PONG ] && echo NOPASS || printf '%s\n' "$out" | head -1 ;;
+      *) printf '%s\n' "$out" | head -1 ;;
+    esac
   else
     docker exec "$c" redis-cli -p "$port" "$@" PING 2>&1 | tail -1 || true
   fi
 }
+
+# PONG → ok; NOPASS → ok, but Redis has no password at all: write it empty and warn
+judge() { case "$1" in PONG) mode=$2 ;; NOPASS) mode="$2 — WARNING: Redis has NO password (anyone who reaches the port gets in); exporter set to no password"; PW="" ;; *) return 1 ;; esac; }
 
 ok=0; failed=0
 while read -r name port var; do
@@ -62,13 +73,13 @@ while read -r name port var; do
   [ -n "$ca" ] || { docker exec "$name" test -f /etc/redis/CA.pem 2>/dev/null && ca=/etc/redis/CA.pem; } || true
   echo "  $name: password $([ -n "$PW" ] && echo found || echo "not set") · port=$(get port) tls-port=${tport:--} tls-auth-clients=$(get tls-auth-clients) ca=${ca:--} cert=${cert:--}"
   mode=""; errs=""
-  r=$(try "$name" "$port"); [ "$r" = PONG ] && mode=plain || errs="plain: $r"
+  r=$(try "$name" "$port"); judge "$r" plain || errs="plain: $r"
   if [ -z "$mode" ] && [ -n "$ca" ]; then
-    r=$(try "$name" "${tport:-$port}" --tls --cacert "$ca"); [ "$r" = PONG ] && mode="tls (CA only)" || errs="$errs | tls: $r"
+    r=$(try "$name" "${tport:-$port}" --tls --cacert "$ca"); judge "$r" "tls (CA only)" || errs="$errs | tls: $r"
   fi
   if [ -z "$mode" ] && [ -n "$ca" ] && [ -n "$cert" ] && [ -n "$key" ]; then
     r=$(try "$name" "${tport:-$port}" --tls --cacert "$ca" --cert "$cert" --key "$key")
-    [ "$r" = PONG ] && mode="tls + client certificate" || errs="$errs | tls+cert: $r"
+    judge "$r" "tls + client certificate" || errs="$errs | tls+cert: $r"
   fi
   if [ -n "$mode" ]; then
     printf "%s='%s'\n" "$var" "$PW" >> "$NEW"
