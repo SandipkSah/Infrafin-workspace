@@ -1,0 +1,102 @@
+// ================================================================================================
+// prod1 only (appended to config.alloy by gen_windows.py) — from the handover of 2026-11-13
+// (handover-prod1-2026-11-13/): QuantOffice logs → Loki, TimeBase JVM → Prometheus.
+// Uses the endpoints, logins and CA of config.alloy (loki.write.db1, prometheus.remote_write.both).
+// Reading log files is passive: TimeBase, StrategyServer and Ember are not touched.
+// Decision 2026-11-16: the original trading/portfolio logs on prod1 and prod3 are never deleted or capped
+// by us — Alloy only reads them; only Loki's COPY expires after 30 days. Nothing here may delete files.
+
+// ---- TimeBase JVM heap / GC (JMX exporter javaagent, 127.0.0.1:9404) ---------------------------
+// Live only after TimeBase is restarted with the agent (config.txt.jmx, their Saturday step); until
+// then this target is up=0. Job "timebase-jvm" is therefore exempt from ExporterDown (alert.rules);
+// once it delivers, it gets its own alerts (heap > 85 %, JVM metrics missing).
+// Heap: jvm_memory_used_bytes{area="heap"} / jvm_memory_max_bytes{area="heap"} (max = -Xmx 8 GiB).
+prometheus.scrape "timebase_jvm" {
+  job_name        = "timebase-jvm"
+  targets         = [{ "__address__" = "127.0.0.1:9404", "service" = "timebase", "env" = "production" }]
+  scrape_interval = "15s"
+  scrape_timeout  = "10s"
+  forward_to      = [prometheus.remote_write.both.receiver]
+}
+
+// ---- QuantOffice log files → Loki ---------------------------------------------------------------
+// On the first start only files modified in the last 2 h are read (no backfill of the ~3.6 GB
+// StrategyServer history); afterwards Alloy follows them and keeps its read positions in its data
+// folder. New/rotated files are found within 10 s.
+local.file_match "strategyserver" {           // StrategyServer / OMS, ~10 MB/day
+  path_targets      = [{ "__path__" = "Q:\\QSHome56\\QuantOffice56\\StrategyServerHome\\logs\\*.log", "job" = "strategyserver" }]
+  ignore_older_than = "2h"
+  sync_period       = "10s"
+}
+
+local.file_match "ember" {                    // Ember incl. ember-service.out.log, ~30 MB/day
+  path_targets      = [{ "__path__" = "Q:\\QSHome56\\QuantOffice56\\EmberHome\\service\\logs\\**\\*.log", "job" = "ember" }]
+  ignore_older_than = "2h"
+  sync_period       = "10s"
+}
+
+local.file_match "timebase" {                 // TimeBase, ~150 MB/day
+  path_targets      = [{ "__path__" = "Q:\\QSHome56\\QuantOffice56\\TimebaseHome\\logs\\deltix_TimeBase-*.log", "job" = "timebase" }]
+  ignore_older_than = "2h"
+  sync_period       = "10s"
+}
+
+loki.source.file "quantoffice" {
+  targets    = array.concat(local.file_match.strategyserver.targets, local.file_match.ember.targets, local.file_match.timebase.targets)
+  forward_to = [loki.process.quantoffice.receiver]
+}
+
+// All three write "YYYY-MM-DD HH:MM:SS.fff… [thread] LEVEL …" in UTC; stack traces and banners are
+// continuation lines and are folded into the entry before them.
+loki.process "quantoffice" {
+  forward_to = [loki.write.db1.receiver]
+
+  stage.multiline {
+    firstline     = "^\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}"
+    max_wait_time = "3s"
+    max_lines     = 500
+  }
+
+  stage.regex {
+    expression = "^(?P<ts>\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?) (?:\\[[^\\]]*\\] )?(?P<lvl>TRACE|DEBUG|INFO|WARN|WARNING|ERROR|FATAL|SEVERE)\\b"
+  }
+
+  stage.timestamp {
+    source            = "ts"
+    format            = "2006-01-02 15:04:05"   // Go also accepts the fractional seconds after it
+    location          = "UTC"
+    action_on_failure = "skip"
+  }
+
+  // same level names as the Linux journal and the Windows event logs (crit, err, warning, info, debug)
+  stage.template {
+    source   = "level"
+    template = "{{ if eq .lvl \"FATAL\" }}crit{{ else if or (eq .lvl \"ERROR\") (eq .lvl \"SEVERE\") }}err{{ else if or (eq .lvl \"WARN\") (eq .lvl \"WARNING\") }}warning{{ else if eq .lvl \"INFO\" }}info{{ else if or (eq .lvl \"DEBUG\") (eq .lvl \"TRACE\") }}debug{{ end }}"
+  }
+  stage.labels {
+    values = { level = "" }
+  }
+
+  // EmberHome\service\logs\<service>\<file> → service="ember-service" | "ember-monitor" | …
+  stage.regex {
+    source     = "filename"
+    expression = "EmberHome\\\\service\\\\logs\\\\(?P<service>[^\\\\]+)\\\\"
+  }
+  stage.labels {
+    values = { service = "" }
+  }
+
+  // ---- secrets out (same rules as everywhere else) ----
+  stage.replace {
+    expression = "(?i)(?:passw(?:or)?d|pwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key)[\"']?\\s*[:=]\\s*[\"']?([^\\s\"',;&}]+)"
+    replace    = "<redacted>"
+  }
+  stage.replace {
+    expression = "(?i)(?:authorization|proxy-authorization)[\"']?\\s*[:=]\\s*[\"']?(?:basic|bearer|token)\\s+([^\\s\"',;]+)"
+    replace    = "<redacted>"
+  }
+  stage.replace {
+    expression = "[a-zA-Z][a-zA-Z0-9+.-]*://[^:/@\\s]+:([^@/\\s]+)@"
+    replace    = "<redacted>"
+  }
+}

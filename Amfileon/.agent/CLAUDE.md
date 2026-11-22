@@ -7,7 +7,7 @@ commit/PR conventions; this file holds infrastructure facts and points at the pe
 
 | Surface | Value |
 |---|---|
-| Servers in scope | db1 10.10.10.20 · db2 10.10.10.21 · cpu1 .30 · cpu2 .31 · gpu1 .40 · prod3 .13 · prod4 .14 · prod2 .12 (Windows: RDP only, no ssh — Alloy as Windows service, `deploy/alloy/windows/`) |
+| Servers in scope | db1 10.10.10.20 · db2 10.10.10.21 · cpu1 .30 · cpu2 .31 · gpu1 .40 · prod3 .13 · prod4 .14 · prod1 .11 · prod2 .12 (both Windows: RDP only, no ssh — Alloy as Windows service, `deploy/alloy/windows/`) |
 | Access | `ssh <host>` as `ssa`, port 22022 — **only with the VPN connected** |
 | OS | Ubuntu 22.04 (db2: 24.04), x86_64; ufw active on every host |
 | Services | Docker Compose projects under `/srv/docker/<service>/`, all `root:root` (dirs 755, files 644) |

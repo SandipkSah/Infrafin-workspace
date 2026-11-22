@@ -1,0 +1,175 @@
+// Grafana Alloy on prod1 (10.10.10.11, Windows): QuantOffice/TimeBase/Ember logs -> Loki on db1,
+// TimeBase JVM (JMX exporter) + Windows host metrics -> Prometheus on db1 and db2.
+// Mirrors the Linux hosts' common.alloy / logs.alloy (same endpoints, users, CA and redaction).
+//
+// Files on this host:
+//   C:\ProgramData\GrafanaLabs\Alloy\amf\amfileon-ca.pem    internal CA (same as db2)
+//   C:\ProgramData\GrafanaLabs\Alloy\amf\loki_password      user "alloy"      (Administrators/SYSTEM only)
+//   C:\ProgramData\GrafanaLabs\Alloy\amf\prom_password      user "alloyuser"  (Administrators/SYSTEM only)
+// The Alloy UI listens on 127.0.0.1:12345 only.
+
+// ---- metrics ------------------------------------------------------------------------------------
+prometheus.remote_write "both" {
+  external_labels = { host = "prod1" }
+
+  wal {
+    max_keepalive_time = "24h"
+  }
+
+  endpoint {
+    name = "db1"
+    url  = "https://db1.prometheus.amf/api/v1/write"
+    tls_config {
+      ca_file = "C:\\ProgramData\\GrafanaLabs\\Alloy\\amf\\amfileon-ca.pem"
+    }
+    basic_auth {
+      username      = "alloyuser"
+      password_file = "C:\\ProgramData\\GrafanaLabs\\Alloy\\amf\\prom_password"
+    }
+  }
+
+  endpoint {
+    name = "db2"
+    url  = "https://db2.prometheus.amf/api/v1/write"
+    tls_config {
+      ca_file = "C:\\ProgramData\\GrafanaLabs\\Alloy\\amf\\amfileon-ca.pem"
+    }
+    basic_auth {
+      username      = "alloyuser"
+      password_file = "C:\\ProgramData\\GrafanaLabs\\Alloy\\amf\\prom_password"
+    }
+  }
+}
+
+// TimeBase JVM via the JMX exporter javaagent (config.txt: -javaagent:...=127.0.0.1:9404:...).
+// Heap: jvm_memory_used_bytes{area="heap"} / jvm_memory_max_bytes{area="heap"}  (max = -Xmx 8 GiB)
+// Shows up=0 until TimeBase is restarted with the agent.
+prometheus.scrape "timebase_jvm" {
+  job_name        = "timebase-jvm"
+  targets         = [{ "__address__" = "127.0.0.1:9404", "service" = "timebase", "env" = "production" }]
+  scrape_interval = "15s"
+  scrape_timeout  = "10s"
+  forward_to      = [prometheus.remote_write.both.receiver]
+}
+
+// Windows host: CPU, memory, disks, network, plus per-process memory/handles/threads for the
+// QuantOffice processes (TimeBase handle count was ~258k on 2026-11-13).
+prometheus.exporter.windows "host" {
+  enabled_collectors = ["cpu", "cs", "logical_disk", "memory", "net", "os", "process", "system"]
+
+  process {
+    include = "(TimeBaseSvcLauncher|AggregatorSvcLauncher|StrategyServer.*|java|alloy)"
+  }
+}
+
+prometheus.scrape "host" {
+  job_name        = "windows"
+  targets         = prometheus.exporter.windows.host.targets
+  scrape_interval = "30s"
+  forward_to      = [prometheus.remote_write.both.receiver]
+}
+
+// ---- logs ---------------------------------------------------------------------------------------
+loki.write "db1" {
+  external_labels = { host = "prod1" }
+
+  endpoint {
+    url = "https://db1.loki.amf/loki/api/v1/push"
+    tls_config {
+      ca_file = "C:\\ProgramData\\GrafanaLabs\\Alloy\\amf\\amfileon-ca.pem"
+    }
+    basic_auth {
+      username      = "alloy"
+      password_file = "C:\\ProgramData\\GrafanaLabs\\Alloy\\amf\\loki_password"
+    }
+  }
+}
+
+// Files modified in the last 2 h are read from the start; older files are skipped (no backfill of
+// the ~3.6 GB StrategyServer history). Rotated files are picked up within sync_period.
+local.file_match "strategyserver" {
+  path_targets = [{
+    "__path__" = "Q:\\QSHome56\\QuantOffice56\\StrategyServerHome\\logs\\*.log",
+    "job"      = "strategyserver",
+  }]
+  ignore_older_than = "2h"
+  sync_period       = "10s"
+}
+
+local.file_match "ember" {
+  path_targets = [{
+    "__path__" = "Q:\\QSHome56\\QuantOffice56\\EmberHome\\service\\logs\\**\\*.log",
+    "job"      = "ember",
+  }]
+  ignore_older_than = "2h"
+  sync_period       = "10s"
+}
+
+local.file_match "timebase" {
+  path_targets = [{
+    "__path__" = "Q:\\QSHome56\\QuantOffice56\\TimebaseHome\\logs\\deltix_TimeBase-*.log",
+    "job"      = "timebase",
+  }]
+  ignore_older_than = "2h"
+  sync_period       = "10s"
+}
+
+loki.source.file "quantoffice" {
+  targets = array.concat(
+    local.file_match.strategyserver.targets,
+    local.file_match.ember.targets,
+    local.file_match.timebase.targets,
+  )
+  forward_to = [loki.process.quantoffice.receiver]
+}
+
+// All three write "YYYY-MM-DD HH:MM:SS.fff[ffff] ..." in UTC; stack traces and banners are
+// continuation lines and are folded into the entry they belong to.
+loki.process "quantoffice" {
+  forward_to = [loki.write.db1.receiver]
+
+  stage.multiline {
+    firstline     = "^\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}"
+    max_wait_time = "3s"
+    max_lines     = 500
+  }
+
+  stage.regex {
+    expression = "^(?P<ts>\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?) (?:\\[[^\\]]*\\] )?(?P<level>TRACE|DEBUG|INFO|WARN|WARNING|ERROR|FATAL|SEVERE)\\b"
+  }
+
+  stage.timestamp {
+    source   = "ts"
+    format   = "2006-01-02 15:04:05"
+    location = "UTC"
+    action_on_failure = "skip"
+  }
+
+  stage.labels {
+    values = { level = "" }
+  }
+
+  // EmberHome\service\logs\<service>\<file> -> service="ember-service" | "ember-monitor" | ...
+  // (StrategyServer and TimeBase files get no service label; filename stays on every stream.)
+  stage.regex {
+    source     = "filename"
+    expression = "EmberHome\\\\service\\\\logs\\\\(?P<service>[^\\\\]+)\\\\"
+  }
+  stage.labels {
+    values = { service = "" }
+  }
+
+  // ---- secrets out (same rules as logs.alloy on the Linux hosts) ----
+  stage.replace {
+    expression = "(?i)(?:passw(?:or)?d|pwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key)[\"']?\\s*[:=]\\s*[\"']?([^\\s\"',;&}]+)"
+    replace    = "<redacted>"
+  }
+  stage.replace {
+    expression = "(?i)(?:authorization|proxy-authorization)[\"']?\\s*[:=]\\s*[\"']?(?:basic|bearer|token)\\s+([^\\s\"',;]+)"
+    replace    = "<redacted>"
+  }
+  stage.replace {
+    expression = "[a-zA-Z][a-zA-Z0-9+.-]*://[^:/@\\s]+:([^@/\\s]+)@"
+    replace    = "<redacted>"
+  }
+}
